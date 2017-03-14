@@ -1,0 +1,9 @@
+{% if person_list %}
+    <ul>
+    {% for person in person_list %}
+        <li>{{ person.last_name }} {{ person.first_name }}</li>
+    {% endfor %}
+    </ul>
+{% else %}
+    <p>No students available.</p>
+{% endif %}

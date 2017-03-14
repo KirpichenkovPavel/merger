@@ -1,0 +1,5 @@
+-e hg+http://kallithea.local/ru/spbstu/polyana-web-remotemodel@default#egg=django_remote_model
+-e hg+http://kallithea.local/ru/spbstu/polyana-web-auth@default#egg=polyana_web_authentication
+-e git+https://github.com/pyldap/pyldap@master#egg=python-ldap
+psycopg2
+pylibmc

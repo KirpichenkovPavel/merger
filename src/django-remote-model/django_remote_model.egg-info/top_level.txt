@@ -1,0 +1,7 @@
+core_client
+django_remote_model
+ldap_proxy_client
+main_remote
+nsi_client
+polyauth_remote
+remote_impl

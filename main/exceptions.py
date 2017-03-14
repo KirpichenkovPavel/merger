@@ -1,0 +1,6 @@
+""""""
+
+class MergerException(Exception):
+    pass
+
+

@@ -1,0 +1,1 @@
+select * from student_data_history;
