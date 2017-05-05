@@ -1,7 +1,8 @@
 from django.shortcuts import render
 from main.util import bp_user_auth
+from main.models import GroupRecord
 from main_remote.models import Student, Employee, Postgraduate
-from django.views.generic import View
+from django.views.generic import View, ListView
 
 
 class IndexCBV(View):

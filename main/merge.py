@@ -3,6 +3,7 @@ from main_remote.models import Student, Employee, Postgraduate
 from main.models import Person, Hypostasis, GroupRecord, Group
 from itertools import groupby, combinations
 from datetime import date
+from bulk_update.helper import bulk_update
 
 
 def get_instance_from_hypostasis(hypostasis):
@@ -56,11 +57,8 @@ def merge_dict(persons_dict):
             #merge_persons(first, rest)
 
 
-def compare_record_with_group(record, record_list):
-    pass
-
 def form_new_groups():
-    """Puts record into new group if it does not have one yet and can meld with another record
+    """Puts records into new groups if they do not have one yet and can meld with each other
 
     Each record should have only one group (person).
     """
@@ -75,17 +73,17 @@ def form_new_groups():
     record_groups = []
     for k, g in groupby(unresolved_records, key=key):
         record_groups.append(list(g))
+    bulk_save_items = []
     for same_date_group in record_groups:
         print(".")
         new_groups = []
         for record_pair in combinations(same_date_group, 2):
             a = record_pair[0]
             b = record_pair[1]
-            if a.has_equal_full_name(b) or a.has_equal_first_and_middle_name(b) or a.has_equal_last_and_middle_name(b):
+            if a.satisfies_new_group_condition(b):
                 a_in_group = False
                 b_in_group = False
                 new_group = None
-                # for already_formed in new_groups:
                 if a.group is not None and a.group in new_groups:
                     a_in_group = True
                     new_group = a.group
@@ -98,9 +96,25 @@ def form_new_groups():
                     new_group.save()
                 if not a_in_group:
                     a.group = new_group
-                    a.save()
+                    bulk_save_items.append(a)
+                    #a.save()
                 if not b_in_group:
                     b.group = new_group
-                    b.save()
-    print("finished\n")
+                    bulk_save_items.append(b)
+                    #b.save()
+    print("Have {0} items to save".format(len(bulk_save_items)))
+    bulk_update(bulk_save_items)
+    print("finished")
 
+
+def distribute_into_existing_groups():
+    unresolved_records = list(GroupRecord.objects.filter(group__isnull=True))
+    records_to_update = []
+    for record in unresolved_records:
+        print(record.id)
+        if record.merge_with_group():
+            records_to_update.append(record)
+    print("Have {0} records to update".format(len(records_to_update)))
+    if len(records_to_update) > 0:
+        bulk_update(records_to_update)
+    print("done")

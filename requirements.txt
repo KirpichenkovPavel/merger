@@ -3,3 +3,4 @@
 -e git+https://github.com/pyldap/pyldap@master#egg=python-ldap
 psycopg2
 pylibmc
+django-bulk-update

@@ -3,6 +3,7 @@ from main_remote.models import Student, Employee, Postgraduate
 from collections import namedtuple, Counter
 
 
+
 class Person(models.Model):
     """Человечище"""
 
@@ -177,7 +178,12 @@ class Hypostasis(models.Model):
 #     keyperson = models.ForeignKey(Person)
 #     person = models.ManyToManyField(Person)
 class Group(models.Model):
-    number = models.IntegerField(null=True)
+    inconsistent = models.BooleanField(default=False)
+
+    @classmethod
+    def mark_inconsitancy(cls):
+        #for grp in cls.objects.all():
+        pass
 
 
 class GroupRecord(models.Model):
@@ -226,3 +232,45 @@ class GroupRecord(models.Model):
     def has_equal_last_and_middle_name(self, another_record):
         attributes = ['last_name', 'middle_name', 'birth_date']
         return self.compare_attributes(another_record=another_record, attribute_list=attributes)
+
+    def satisfies_new_group_condition(self, another_record):
+        """No date check, used only in sorted-by-dates groups"""
+        return self.has_equal_full_name(another_record) or self.has_equal_last_and_middle_name(another_record) or self.has_equal_first_and_middle_name(another_record)
+
+    def satisfies_existing_group_condition(self, another_record):
+        if self.has_equal_dates(another_record):
+            if self.satisfies_new_group_condition(another_record):
+                return True
+        else:
+            return False
+
+    def compare_with_group(self, group):
+        """ Full check only for inconsistent groups. Otherwise check with random record in group"""
+        if not isinstance(group, Group):
+            raise TypeError('group must be a Group instance')
+        elif self.group is not None:
+            raise AttributeError('group record should not have group')
+        else:
+            if group.inconsistent:
+                for record_to_compare in group.grouprecord_set.all():
+                    if self.satisfies_existing_group_condition(record_to_compare):
+                        return True
+                    else:
+                        return False
+            else:
+                to_compare = group.grouprecord_set.first()
+                return self.satisfies_existing_group_condition(to_compare)
+
+    def merge_with_group(self):
+        """Try to find group that has at least one similar record. NEED SAVE IF RETURNED TRUE"""
+        for group in Group.objects.all():
+            if self.compare_with_group(group=group):
+                self.group = group
+                #self.save()
+                return True
+        return False
+
+    def merge_with_group_and_save(self):
+        """In mass updates use bulk update instead"""
+        if self.merge_with_group():
+            self.save()
