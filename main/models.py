@@ -95,8 +95,9 @@ class Person(models.Model):
 
     def prepare_merge(self, person, group=None):
         """Create pre-merge object for two persons."""
-        if group is None:
-            group = PreMergeGroup()
+        pass
+        # if group is None:
+        #     group = PreMergeGroup()
             # PreMerge(primary=self, dependent=person).save()
 
     @classmethod
@@ -126,7 +127,7 @@ class Hypostasis(models.Model):
                         employee_id=self.employee_id,
                         postgraduate_id=self.postgraduate_id)
         if ids_tuple.student_id is not None:
-            if ids_tuple.emloyee_id is not None or ids_tuple.postgraduate_id is not None:
+            if ids_tuple.employee_id is not None or ids_tuple.postgraduate_id is not None:
                 raise ValueError("More than one non-empty id in hypostasis.")
             return Student.objects.get(id=ids_tuple.student_id)
         elif ids_tuple.employee_id is not None:
@@ -176,14 +177,52 @@ class Hypostasis(models.Model):
 #     keyperson = models.ForeignKey(Person)
 #     person = models.ManyToManyField(Person)
 class Group(models.Model):
-    pass
+    number = models.IntegerField(null=True)
+
 
 class GroupRecord(models.Model):
     """"""
+
     hypostasis = models.ForeignKey(Hypostasis)
     person = models.ForeignKey(Person)
-    group = models.ForeignKey(Group)
+    group = models.ForeignKey(Group, null=True)
     last_name = models.CharField(max_length=255, null=True)
     first_name = models.CharField(max_length=255, null=True)
     middle_name = models.CharField(max_length=255, null=True)
     birth_date = models.DateField(null=True)
+
+    def __str__(self):
+        return "{0} {1} {2} {3}".format(self.last_name, self.first_name, self.middle_name, self.birth_date)
+
+    def compare_attribute(self, another_record, attribute, another_attribute=None):
+        if another_attribute is None:
+            another_attribute = attribute
+        if getattr(self, attribute) == getattr(another_record, another_attribute):
+            return True
+        else:
+            return False
+
+    def compare_attributes(self, another_record, attribute_list):
+        for attribute in attribute_list:
+            if not self.compare_attribute(another_record=another_record, attribute=attribute):
+                return False
+        return True
+
+    def completely_equal(self, another_record):
+        attributes = ['last_name', 'first_name', 'middle_name', 'birth_date']
+        return self.compare_attributes(another_record=another_record, attribute_list=attributes)
+
+    def has_equal_full_name(self, another_record):
+        attributes = ['last_name', 'first_name', 'middle_name']
+        return self.compare_attributes(another_record=another_record, attribute_list=attributes)
+
+    def has_equal_first_and_middle_name(self, another_record):
+        attributes = ['last_name', 'first_name', 'middle_name', 'birth_date']
+        return self.compare_attributes(another_record=another_record, attribute_list=attributes)
+
+    def has_equal_dates(self, another_record):
+        return self.compare_attribute(another_record=another_record, attribute='birth_date')
+
+    def has_equal_last_and_middle_name(self, another_record):
+        attributes = ['last_name', 'middle_name', 'birth_date']
+        return self.compare_attributes(another_record=another_record, attribute_list=attributes)

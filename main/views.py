@@ -1,7 +1,6 @@
 from django.shortcuts import render
 from main.util import bp_user_auth
 from main_remote.models import Student, Employee, Postgraduate
-from main.util import Hypostasis, Person
 from django.views.generic import View
 
 

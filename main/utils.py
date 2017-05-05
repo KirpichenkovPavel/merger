@@ -1,4 +1,4 @@
-from main.models import Hypostasis, Person
+from main.models import Hypostasis, Person, Group, GroupRecord
 from main_remote.models import Student, Employee, Postgraduate
 from main.merge import get_instance_from_hypostasis
 
@@ -50,3 +50,31 @@ def create_persons(hypo_list):
         h.save()
         print(h.id)
 
+
+# переделать, возможно с удалением и пересозданием групп. Нельзя делать ссыль на несохраненный объект
+def create_group_records():
+    """Creates group records for initial data for test purposes."""
+    records = []
+    groups = []
+    print("\nSaving groups\n")
+    for j in range(Hypostasis.objects.count()):
+        print("\n{0}\n".format(j))
+        g = Group(number=j)
+        groups.append(g)
+    Group.objects.bulk_create(groups)
+    print("\nCreating records\n")
+    i = 0
+    for hypo in list(Hypostasis.objects.all()):
+        print("\n{0}\n".format(i))
+        instance = hypo.get_non_empty_instance()
+        group = Group.objects.get(number=i)
+        records.append(GroupRecord(hypostasis=hypo,
+                                   person=hypo.person,
+                                   group=group,
+                                   last_name=instance.last_name,
+                                   first_name=instance.first_name,
+                                   middle_name=instance.middle_name,
+                                   birth_date=instance.date_birth))
+        i += 1
+    print("\nSaving records\n")
+    GroupRecord.objects.bulk_create(records)

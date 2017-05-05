@@ -1,6 +1,8 @@
 from collections import namedtuple
 from main_remote.models import Student, Employee, Postgraduate
-from main.models import Person, Hypostasis
+from main.models import Person, Hypostasis, GroupRecord, Group
+from itertools import groupby, combinations
+from datetime import date
 
 
 def get_instance_from_hypostasis(hypostasis):
@@ -51,5 +53,54 @@ def merge_dict(persons_dict):
         if len(person_list) > 1:
             first = person_list[0]
             rest = person_list[1:]
-            merge_persons(first, rest)
+            #merge_persons(first, rest)
+
+
+def compare_record_with_group(record, record_list):
+    pass
+
+def form_new_groups():
+    """Puts record into new group if it does not have one yet and can meld with another record
+
+    Each record should have only one group (person).
+    """
+    def keyF(gr):
+        if gr.birth_date is None:
+            return date.today()
+        else:
+            return gr.birth_date
+    key = keyF
+    unresolved_records = list(GroupRecord.objects.filter(group__isnull=True))
+    unresolved_records.sort(key=key)
+    record_groups = []
+    for k, g in groupby(unresolved_records, key=key):
+        record_groups.append(list(g))
+    for same_date_group in record_groups:
+        print(".")
+        new_groups = []
+        for record_pair in combinations(same_date_group, 2):
+            a = record_pair[0]
+            b = record_pair[1]
+            if a.has_equal_full_name(b) or a.has_equal_first_and_middle_name(b) or a.has_equal_last_and_middle_name(b):
+                a_in_group = False
+                b_in_group = False
+                new_group = None
+                # for already_formed in new_groups:
+                if a.group is not None and a.group in new_groups:
+                    a_in_group = True
+                    new_group = a.group
+                if b.group is not None and b.group in new_groups:
+                    b_in_group = True
+                    new_group = b.group
+                if new_group is None:
+                    new_group = Group()
+                    new_groups.append(new_group)
+                    new_group.save()
+                if not a_in_group:
+                    a.group = new_group
+                    a.save()
+                if not b_in_group:
+                    b.group = new_group
+                    b.save()
+    print("finished\n")
 
