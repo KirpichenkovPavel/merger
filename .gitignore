@@ -1,4 +1,6 @@
 .idea/
 .env
-log/
-main/migrations/__pycache__/
+/log/*
+/main/__pycache__/*
+/main/migrations/__pycache__/*
+*.pyc
