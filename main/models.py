@@ -249,7 +249,7 @@ class GroupRecord(models.Model):
         if not isinstance(group, Group):
             raise TypeError('group must be a Group instance')
         elif self.group is not None:
-            raise AttributeError('group record should not have group')
+            raise AttributeError('group record should not have group yet')
         else:
             if group.inconsistent:
                 for record_to_compare in group.grouprecord_set.all():

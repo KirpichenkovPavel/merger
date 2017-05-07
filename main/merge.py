@@ -68,6 +68,7 @@ def form_new_groups():
         else:
             return gr.birth_date
     key = keyF
+    print("Extracting records")
     unresolved_records = list(GroupRecord.objects.filter(group__isnull=True))
     unresolved_records.sort(key=key)
     record_groups = []
@@ -75,7 +76,6 @@ def form_new_groups():
         record_groups.append(list(g))
     bulk_save_items = []
     for same_date_group in record_groups:
-        print(".")
         new_groups = []
         for record_pair in combinations(same_date_group, 2):
             a = record_pair[0]
@@ -104,7 +104,7 @@ def form_new_groups():
                     #b.save()
     print("Have {0} items to save".format(len(bulk_save_items)))
     bulk_update(bulk_save_items)
-    print("finished")
+    print("Done")
 
 
 def distribute_into_existing_groups():
@@ -117,4 +117,39 @@ def distribute_into_existing_groups():
     print("Have {0} records to update".format(len(records_to_update)))
     if len(records_to_update) > 0:
         bulk_update(records_to_update)
-    print("done")
+    print("Done")
+
+
+def get_groups_dict():
+    return {group: list(group.grouprecord_set.all()) for group in Group.objects.all()}
+
+
+def check_group_consistency(group_record_list):
+    """Returns True, if all records in list are fully equal"""
+    first = group_record_list[0]
+    for other in group_record_list[1:]:
+        if not first.completely_equal(other):
+            return False
+    return True
+
+
+def mark_inconsistency():
+    """Update all groups consistency flag"""
+    print("Extracting groups")
+    groups_dict = get_groups_dict()
+    groups_to_save = []
+    print("Iterating through groups")
+    for group in get_groups_dict().keys():
+        records = groups_dict[group]
+        if check_group_consistency(records):
+            if group.inconsistent:
+                group.inconsistent = False
+                groups_to_save.append(group)
+        else:
+            if not group.inconsistent:
+                group.inconsistent = True
+                groups_to_save.append(group)
+    print("In-memory changes done")
+    print("{} groups will be changed".format(len(groups_to_save)))
+    bulk_update(groups_to_save)
+    print("Done")
