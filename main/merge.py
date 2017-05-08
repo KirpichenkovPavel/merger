@@ -74,7 +74,7 @@ def form_new_groups():
     record_groups = []
     for k, g in groupby(unresolved_records, key=key):
         record_groups.append(list(g))
-    bulk_save_items = []
+    records_to_update = []
     for same_date_group in record_groups:
         new_groups = []
         for record_pair in combinations(same_date_group, 2):
@@ -96,32 +96,36 @@ def form_new_groups():
                     new_group.save()
                 if not a_in_group:
                     a.group = new_group
-                    bulk_save_items.append(a)
-                    #a.save()
+                    records_to_update.append(a)
                 if not b_in_group:
                     b.group = new_group
-                    bulk_save_items.append(b)
-                    #b.save()
-    print("Have {0} items to save".format(len(bulk_save_items)))
-    bulk_update(bulk_save_items)
+                    records_to_update.append(b)
+    print("Have {0} items to save".format(len(records_to_update)))
+    bulk_update(records_to_update, update_fields=['group'])
     print("Done")
 
 
-def distribute_into_existing_groups():
+def distribute_records_to_existing_groups():
+    print("Extracting records")
     unresolved_records = list(GroupRecord.objects.filter(group__isnull=True))
+    print("Making groups dict")
+    groups_dict = Group.get_groups_dict()
     records_to_update = []
+    print("Handling records")
     for record in unresolved_records:
         print(record.id)
-        if record.merge_with_group():
+        suitable_group = record.seek_for_group(groups_dict)
+        if suitable_group is not None:
+            record.group = suitable_group
             records_to_update.append(record)
     print("Have {0} records to update".format(len(records_to_update)))
     if len(records_to_update) > 0:
-        bulk_update(records_to_update)
+        bulk_update(records_to_update, update_fields=['group'])
     print("Done")
 
 
-def get_groups_dict():
-    return {group: list(group.grouprecord_set.all()) for group in Group.objects.all()}
+# def get_groups_dict():
+#     return {group: list(group.grouprecord_set.all()) for group in Group.objects.all()}
 
 
 def check_group_consistency(group_record_list):
@@ -136,20 +140,38 @@ def check_group_consistency(group_record_list):
 def mark_inconsistency():
     """Update all groups consistency flag"""
     print("Extracting groups")
-    groups_dict = get_groups_dict()
-    groups_to_save = []
+    groups_dict = Group.get_groups_dict()
+    groups_to_update = []
     print("Iterating through groups")
-    for group in get_groups_dict().keys():
+    for group in groups_dict.keys():
         records = groups_dict[group]
         if check_group_consistency(records):
             if group.inconsistent:
                 group.inconsistent = False
-                groups_to_save.append(group)
+                groups_to_update.append(group)
         else:
             if not group.inconsistent:
                 group.inconsistent = True
-                groups_to_save.append(group)
+                groups_to_update.append(group)
     print("In-memory changes done")
-    print("{} groups will be changed".format(len(groups_to_save)))
-    bulk_update(groups_to_save)
+    print("{} groups will be changed".format(len(groups_to_update)))
+    bulk_update(groups_to_update, update_fields=['inconsistent'])
+    print("Done")
+
+
+def merge_consistent_groups():
+    print("Making dict")
+    groups_dict = Group.get_groups_dict()
+    records_to_update = []
+    hypostases_to_update = []
+    print("Iterating")
+    for group, records in groups_dict.items():
+        print(group.id)
+        if not group.inconsistent and len(records) > 1:
+            changed_hypos = records[0].merge_records_by_hypostases(records[1:], save=False)
+            hypostases_to_update.extend(changed_hypos) if len(changed_hypos) > 0 else None
+            records_to_update.extend(records[1:])
+    print("Saving")
+    bulk_update(records_to_update, update_fields=['person'])
+    bulk_update(hypostases_to_update, update_fields=['person'])
     print("Done")

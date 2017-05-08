@@ -1,7 +1,7 @@
 from django.db import models
 from main_remote.models import Student, Employee, Postgraduate
 from collections import namedtuple, Counter
-
+from bulk_update.helper import bulk_update
 
 
 class Person(models.Model):
@@ -25,7 +25,7 @@ class Person(models.Model):
         super().__init__(*args, **kwargs)
 
     def get_actual_instance(self):
-        """Get instance (remote object) with the lastest valid_to date in related object."""
+        """Get instance (remote object) with the latest valid_to date in related object."""
 
         def latest_instance(instance_list):
             """Instance without valid_to date is, probably, actual, otherwise, get one with the latest as actual."""
@@ -61,14 +61,6 @@ class Person(models.Model):
                 hypostasis.save()
             person.delete()
 
-    def fio_date_merge(self):
-        pass
-
-    # подумать про добавление учета дат
-    # class attr_dict:
-    #
-    #     def __init__(self, *, attrlist):
-    #         self.attr_dict
 
     def get_attribute_dict(self, attributes):
         """Counts the amount of different variants of attributes in person's hypostases.
@@ -94,18 +86,11 @@ class Person(models.Model):
         """Check equivalence with another person and return metric."""
         return 100
 
-    def prepare_merge(self, person, group=None):
-        """Create pre-merge object for two persons."""
-        pass
-        # if group is None:
-        #     group = PreMergeGroup()
-            # PreMerge(primary=self, dependent=person).save()
 
     @classmethod
     def get_all_attrdicts(cls, *, attributes):
         """Get attribute dict for each person, return list of them"""
         return [(person,person.get_attribute_dict(attributes=attributes)) for person in list(Person.objects.all())]
-
 
     def __str__(self):
         return "{0} {1} {2}".format(self.last_name, self.first_name, self.middle_name)
@@ -117,7 +102,7 @@ class Hypostasis(models.Model):
     employee_id = models.CharField(max_length=255, unique=True, null=True)
     student_id = models.IntegerField(unique=True, null=True)
     postgraduate_id = models.IntegerField(unique=True, null=True)
-    person = models.ForeignKey(Person, null=True)
+    person = models.ForeignKey(Person, null=True, on_delete=models.SET_NULL)
 
     def get_non_empty_instance(self):
         """Hyposatsis should have only one not-None id.
@@ -172,18 +157,19 @@ class Hypostasis(models.Model):
         #     return self.get_non_empty_instance().birth_date == another_hypostasis.get_non_empty_hypostasis().birth_date
 
 
-# class PreMergeGroup(models.Model):
-#     """m2m for persons that may be the same person."""
-#
-#     keyperson = models.ForeignKey(Person)
-#     person = models.ManyToManyField(Person)
 class Group(models.Model):
     inconsistent = models.BooleanField(default=False)
 
-    @classmethod
-    def mark_inconsitancy(cls):
-        #for grp in cls.objects.all():
-        pass
+    def blind_merge(self):
+        records = list(self.group_record_set.all())
+        if len(records) > 1:
+            first = records[0]
+            for record in records[1:]:
+                record
+
+    @staticmethod
+    def get_groups_dict():
+        return {group: list(group.group_record_set.all()) for group in Group.objects.all()}
 
 
 class GroupRecord(models.Model):
@@ -191,7 +177,7 @@ class GroupRecord(models.Model):
 
     hypostasis = models.ForeignKey(Hypostasis)
     person = models.ForeignKey(Person)
-    group = models.ForeignKey(Group, null=True)
+    group = models.ForeignKey(Group, null=True, related_name='group_record_set')
     last_name = models.CharField(max_length=255, null=True)
     first_name = models.CharField(max_length=255, null=True)
     middle_name = models.CharField(max_length=255, null=True)
@@ -226,7 +212,7 @@ class GroupRecord(models.Model):
         attributes = ['last_name', 'first_name', 'middle_name', 'birth_date']
         return self.compare_attributes(another_record=another_record, attribute_list=attributes)
 
-    def has_equal_dates(self, another_record):
+    def has_equal_date(self, another_record):
         return self.compare_attribute(another_record=another_record, attribute='birth_date')
 
     def has_equal_last_and_middle_name(self, another_record):
@@ -238,39 +224,133 @@ class GroupRecord(models.Model):
         return self.has_equal_full_name(another_record) or self.has_equal_last_and_middle_name(another_record) or self.has_equal_first_and_middle_name(another_record)
 
     def satisfies_existing_group_condition(self, another_record):
-        if self.has_equal_dates(another_record):
+        if self.has_equal_date(another_record):
             if self.satisfies_new_group_condition(another_record):
                 return True
         else:
             return False
 
-    def compare_with_group(self, group):
-        """ Full check only for inconsistent groups. Otherwise check with random record in group"""
-        if not isinstance(group, Group):
-            raise TypeError('group must be a Group instance')
-        elif self.group is not None:
+    def compare_with_list(self, record_list):
+        """ Full check with all records in list. Intended for inconsistent groups."""
+        if self.group is not None:
             raise AttributeError('group record should not have group yet')
         else:
+            for record_to_compare in record_list:
+                if self.satisfies_existing_group_condition(record_to_compare):
+                    return True
+            return False
+
+    def seek_for_group(self, group_dict):
+        """In group_dict key must be group and value must be list of records"""
+        for group in group_dict:
             if group.inconsistent:
-                for record_to_compare in group.grouprecord_set.all():
-                    if self.satisfies_existing_group_condition(record_to_compare):
-                        return True
-                    else:
-                        return False
+                if self.compare_with_list(group_dict[group]):
+                    return group
             else:
-                to_compare = group.grouprecord_set.first()
-                return self.satisfies_existing_group_condition(to_compare)
+                if self.satisfies_existing_group_condition(group_dict[group][0]):
+                    return group
 
-    def merge_with_group(self):
-        """Try to find group that has at least one similar record. NEED SAVE IF RETURNED TRUE"""
-        for group in Group.objects.all():
-            if self.compare_with_group(group=group):
-                self.group = group
-                #self.save()
-                return True
-        return False
-
-    def merge_with_group_and_save(self):
+    def find_group_and_save(self, group_dict):
         """In mass updates use bulk update instead"""
-        if self.merge_with_group():
+        suitable_group = self.seek_for_group(group_dict)
+        if suitable_group is not None:
+            self.group = suitable_group
             self.save()
+            return suitable_group
+
+    def find_group_from_base(self):
+        """No need to use - no advantages in speed compared to dict variant"""
+        for group in list(Group.objects.all()):
+            related_records = list(group.grouprecord_set.all())
+            if group.inconsistent:
+                if self.compare_with_list(related_records):
+                    return group
+            else:
+                if self.satisfies_existing_group_condition(related_records[0]):
+                    return group
+
+    def merge_records_by_hypostases(self, other_records, save=True):
+        """No checks about group being made assuming this checks are already done more efficiently."""
+        hypostases_to_update = []
+        if save:
+            records_to_update = []
+        for record in other_records:
+            previous_person = record.hypostasis.person
+            if previous_person == self.person:
+                continue
+            amount = previous_person.hypostasis_set.count()
+            record.hypostasis.person = self.person
+            hypostases_to_update.append(record.hypostasis)
+            record.person = self.person
+            if amount < 2:
+                previous_person.delete()
+            if save:
+                records_to_update.append(record)
+        if save:
+            bulk_update(records_to_update, update_fields=['person'])
+            bulk_update(hypostases_to_update, update_fields=['person'])
+        else:
+            return hypostases_to_update
+
+    def merge_records_by_persons(self, other_records, save=True):
+        """This merge also updates related records from other groups if they have reference to the same person.
+
+        May be strange, slow and generally wrong"""
+        persons = set()
+        hypostases = []
+        records = []
+        new_group = self.group
+        new_person = self.person
+        for record in other_records:
+            persons.add(record.person)
+        if new_person in persons:
+            persons.remove(new_person)
+        for person in persons:
+            hypostases.extend(person.hypostasis_set.all())
+            records.extend(person.grouprecord_set.all())
+        for record in records:
+            record.group = new_group
+            record.person = new_person
+        for hypostasis in hypostases:
+            hypostasis.person = new_person
+        bulk_update(hypostases, update_fields=['person'])
+        if save:
+            bulk_update(records, update_fields=['person', 'group'])
+        # needs changes if this deletes hypostases before they were saved. Mb always save
+        for person in persons:
+            person.delete()
+
+
+        # hypostases_to_update = []
+        # if save:
+        #     records_to_update = []
+        # for record in other_records:
+        #     previous_person = record.hypostasis.person
+        #     if previous_person == self.person:
+        #         continue
+        #     hypo_list = list(previous_person.hypostasis_set.all())
+        #     amount = len(hypo_list)
+        #     if amount == 1:
+        #         hypo_list[0].person = self.person
+        #         record.person = self.person
+        #         hypostases_to_update.append(hypo_list[0])
+        #         if save:
+        #             records_to_update.append(record)
+        #     else:
+        #         for hypostasis in hypo_list:
+        #             # In correct situation there should be only one related record for each hypostasis
+        #             related_record = hypostasis.grouprecord_set.get()
+        #             if related_record == record:
+        #                 # same as for amount == 1
+        #                 pass
+        #             elif related_record.group == self.group:
+        #                 continue
+        #             else:
+        #                 related_record.group = self.group
+        #                 related_record.person = self.person
+        #                 hypostasis.person = self.person
+        #                 hypostases_to_update.append(hypostasis)
+        #                 records_to_update.append(related_record)
+        #     previous_person.delete()
+        # if save:
+        #     bulk_update(records_to_update, update_fields=['person'])
