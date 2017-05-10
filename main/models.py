@@ -176,7 +176,7 @@ class GroupRecord(models.Model):
     """"""
 
     hypostasis = models.ForeignKey(Hypostasis)
-    person = models.ForeignKey(Person)
+    person = models.ForeignKey(Person, null=True, on_delete=models.SET_NULL)
     group = models.ForeignKey(Group, null=True, related_name='group_record_set')
     last_name = models.CharField(max_length=255, null=True)
     first_name = models.CharField(max_length=255, null=True)
