@@ -2,6 +2,7 @@ from main.models import Hypostasis, Person, Group, GroupRecord
 from main_remote.models import Student, Employee, Postgraduate
 from main.merge import get_instance_from_hypostasis
 from bulk_update.helper import bulk_update
+import jellyfish as jf
 
 
 def create_hypostases():
@@ -98,3 +99,15 @@ def direct_search():
         except KeyError:
             result[key] = [record]
     return result
+
+
+def showjf(gd):
+    for group, records in gd.items():
+        if group.inconsistent:
+            name1 = records[0].first_name
+            name2 = records[1].first_name
+            print("{0} {1} l:{2} j:{3} j-w:{4}".format(name1,
+                                                       name2,
+                                                       jf.levenshtein_distance(name1, name2),
+                                                       jf.jaro_distance(name1, name2),
+                                                       jf.jaro_winkler(name1, name2)))

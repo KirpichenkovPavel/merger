@@ -4,3 +4,5 @@
 psycopg2
 pylibmc
 django-bulk-update
+jellyfish
+cached_property

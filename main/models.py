@@ -2,6 +2,10 @@ from django.db import models
 from main_remote.models import Student, Employee, Postgraduate
 from collections import namedtuple, Counter
 from bulk_update.helper import bulk_update
+from main.exceptions import HypostasisIntegrityError
+from cached_property import cached_property, cached_property_ttl
+from merger.local_settings import HYPOSTASIS_CACHE_TTL
+from inspect import getmembers, ismethod
 
 
 class Person(models.Model):
@@ -41,14 +45,14 @@ class Person(models.Model):
             return res
 
         hypos_list = self.hypostasis_set.all()
-        instances = [x.get_non_empty_instance() for x in hypos_list]
+        instances = [x.non_empty_instance for x in hypos_list]
         return latest_instance(instances)
 
     def get_actual_hypostasis(self):
         """Get hypostasis with the latest date for this person"""
         instance = self.get_actual_instance()
         for hypostasis in self.hypostasis_set.all():
-            if hypostasis.get_non_empty_instance() == instance:
+            if hypostasis.non_empty_instance == instance:
                 return hypostasis
 
     def merge_persons(self, person_list):
@@ -60,7 +64,6 @@ class Person(models.Model):
                 hypostasis.person = self
                 hypostasis.save()
             person.delete()
-
 
     def get_attribute_dict(self, attributes):
         """Counts the amount of different variants of attributes in person's hypostases.
@@ -75,12 +78,6 @@ class Person(models.Model):
             attributes[attribute].update(
                 [getattr(x.get_non_empty_instance(), attribute) for x in list(self.hypostasis_set.all())])
         return attributes
-        # with dates?
-        # attributes = {name: {} for name in attributes}
-        # for attribute in attributes:
-        #     attributes[attribute].update(
-        #         {getattr(x.get_non_empty_instance(), attribute):{} for x in list(self.hypostasis_set.all())})
-        # return attributes
 
     def check_pre_merge(self, person, **kwargs):
         """Check equivalence with another person and return metric."""
@@ -104,68 +101,52 @@ class Hypostasis(models.Model):
     postgraduate_id = models.IntegerField(unique=True, null=True)
     person = models.ForeignKey(Person, null=True, on_delete=models.SET_NULL)
 
-    def get_non_empty_instance(self):
-        """Hyposatsis should have only one not-None id.
-
-         Function returns existing related instance."""
-        ids = namedtuple("ids", ["student_id", "employee_id", "postgraduate_id"])
-        ids_tuple = ids(student_id=self.student_id,
-                        employee_id=self.employee_id,
-                        postgraduate_id=self.postgraduate_id)
-        if ids_tuple.student_id is not None:
-            if ids_tuple.employee_id is not None or ids_tuple.postgraduate_id is not None:
-                raise ValueError("More than one non-empty id in hypostasis.")
-            return Student.objects.get(id=ids_tuple.student_id)
-        elif ids_tuple.employee_id is not None:
-            if ids_tuple.postgraduate_id is not None:
-                raise ValueError("More than one non-empty id in hypostasis.")
-            return Employee.objects.get(id=ids_tuple.employee_id)
-        elif ids_tuple.postgraduate_id is not None:
-            return Postgraduate.objects.get(id=ids_tuple.postgraduate_id)
-        else:
-            raise ValueError("All ids in hypostasis are empty.")
-
     def __str__(self):
-        from main.merge import get_instance_from_hypostasis
-        instance = get_instance_from_hypostasis(self)
+        # from main.merge import get_instance_from_hypostasis
+        instance = self.non_empty_instance
         st = str(type(instance)).split(".")[-1].split("'")[0] + " " + str(instance)
         return st
 
-    def compare_attribute(self, another_hypostasis, attribute, another_attribute=None):
-        """Compare Hypostasis attribute with another from another one"""
-        if attribute not in self.__dict__ or \
-                                another_attribute is not None and another_attribute not in another_hypostasis.__dict__:
-            raise KeyError("No such attribute {}".format(attribute))
-        if another_attribute is None:
-            another_attribute = attribute
-        return getattr(self, attribute) == getattr(another_hypostasis, another_attribute)
+    @cached_property_ttl(ttl=HYPOSTASIS_CACHE_TTL)
+    def _instance_type(self):
+        """Returns one of the following strings: student, postgraduate or employee
 
-        # def compare_last_name(self, another_hypostasis):
-        #     """For now checks complete equality."""
-        #     return self.get_non_empty_instance().last_name == another_hypostasis.get_non_empty_hypostasis().last_name
-        #
-        # def compare_first_name(self, another_hypostasis):
-        #     """For now checks complete equality."""
-        #     return self.get_non_empty_instance().first_name == another_hypostasis.get_non_empty_hypostasis().first_name
-        #
-        # def compare_middle_name(self, another_hypostasis):
-        #     """For now checks complete equality."""
-        #     return self.get_non_empty_instance().middle_name == another_hypostasis.get_non_empty_hypostasis().middle_name
-        #
-        # def compare_birth_date(self, another_hypostasis):
-        #     """For now checks complete equality."""
-        #     return self.get_non_empty_instance().birth_date == another_hypostasis.get_non_empty_hypostasis().birth_date
+        Raises HypostasisIntegrityError either if all ids are empty or if more than one is not empty
+        """
+
+        if self.student_id is not None:
+            if self.employee_id is not None or self.postgraduate_id is not None:
+                raise HypostasisIntegrityError("More than one non-empty id of related object")
+            return "student"
+        elif self.postgraduate_id is not None:
+            if self.employee_id is not None:
+                raise HypostasisIntegrityError("More than one non-empty id of related object")
+            return "postgraduate"
+        elif self.employee_id is not None:
+            return "employee"
+        else:
+            raise HypostasisIntegrityError("All ids in hypostasis are empty")
+
+    @cached_property_ttl(ttl=HYPOSTASIS_CACHE_TTL)
+    def remote_class(self):
+        """One of the remote model class objects: Hypostasis, Student or Postgraduate"""
+        return eval(self._instance_type.capitalize())
+
+    @cached_property_ttl(ttl=HYPOSTASIS_CACHE_TTL)
+    def non_empty_id(self):
+        return getattr(self, self._instance_type + "_id")
+
+    @cached_property_ttl(ttl=HYPOSTASIS_CACHE_TTL)
+    def non_empty_instance(self):
+        """Returns related remote instance"""
+
+        class_name = self.remote_class
+        nonempty_id = self.non_empty_id
+        return class_name.objects.get(pk=nonempty_id)
 
 
 class Group(models.Model):
     inconsistent = models.BooleanField(default=False)
-
-    def blind_merge(self):
-        records = list(self.group_record_set.all())
-        if len(records) > 1:
-            first = records[0]
-            for record in records[1:]:
-                record
 
     @staticmethod
     def get_groups_dict():
@@ -183,8 +164,20 @@ class GroupRecord(models.Model):
     middle_name = models.CharField(max_length=255, null=True)
     birth_date = models.DateField(null=True)
 
+    PREDICATE_METHODS = ["completely_equal", "has_equal_full_name", "has_equal_first_and_middle_name", "has_equal_date",
+                         "has_equal_last_and_middle_name", "satisfies_new_group_condition",
+                         "satisfies_existing_group_condition"]
+
     def __str__(self):
         return "{0} {1} {2} {3}".format(self.last_name, self.first_name, self.middle_name, self.birth_date)
+
+    def call_method(self, method_name, *args, **kwargs):
+        names = [tup[0] for tup in getmembers(self, predicate=ismethod)]
+        if method_name not in names:
+            raise AttributeError("{} is not a method of GroupRecord".format(method_name))
+        else:
+            method = getattr(self, method_name)
+            return method(*args, **kwargs)
 
     def compare_attribute(self, another_record, attribute, another_attribute=None):
         if another_attribute is None:
@@ -200,6 +193,16 @@ class GroupRecord(models.Model):
                 return False
         return True
 
+    def check_predicates(self, another_record, predicate_methods):
+        """Returns True only if all predicates return True"""
+        for predicate in predicate_methods:
+            if predicate not in GroupRecord.PREDICATE_METHODS:
+                raise AttributeError("{} is not an allowed predicate method")
+        for predicate in predicate_methods:
+            if not self.call_method(predicate, another_record):
+                return False
+        return True
+
     def completely_equal(self, another_record):
         attributes = ['last_name', 'first_name', 'middle_name', 'birth_date']
         return self.compare_attributes(another_record=another_record, attribute_list=attributes)
@@ -209,14 +212,14 @@ class GroupRecord(models.Model):
         return self.compare_attributes(another_record=another_record, attribute_list=attributes)
 
     def has_equal_first_and_middle_name(self, another_record):
-        attributes = ['last_name', 'first_name', 'middle_name', 'birth_date']
+        attributes = ['first_name', 'middle_name']
         return self.compare_attributes(another_record=another_record, attribute_list=attributes)
 
     def has_equal_date(self, another_record):
         return self.compare_attribute(another_record=another_record, attribute='birth_date')
 
     def has_equal_last_and_middle_name(self, another_record):
-        attributes = ['last_name', 'middle_name', 'birth_date']
+        attributes = ['last_name', 'middle_name']
         return self.compare_attributes(another_record=another_record, attribute_list=attributes)
 
     def satisfies_new_group_condition(self, another_record):
@@ -250,7 +253,7 @@ class GroupRecord(models.Model):
                 if self.satisfies_existing_group_condition(group_dict[group][0]):
                     return group
 
-    def find_group_and_save(self, group_dict):
+    def seek_for_group_and_save(self, group_dict):
         """In mass updates use bulk update instead"""
         suitable_group = self.seek_for_group(group_dict)
         if suitable_group is not None:
@@ -316,41 +319,5 @@ class GroupRecord(models.Model):
         bulk_update(hypostases, update_fields=['person'])
         if save:
             bulk_update(records, update_fields=['person', 'group'])
-        # needs changes if this deletes hypostases before they were saved. Mb always save
         for person in persons:
             person.delete()
-
-
-        # hypostases_to_update = []
-        # if save:
-        #     records_to_update = []
-        # for record in other_records:
-        #     previous_person = record.hypostasis.person
-        #     if previous_person == self.person:
-        #         continue
-        #     hypo_list = list(previous_person.hypostasis_set.all())
-        #     amount = len(hypo_list)
-        #     if amount == 1:
-        #         hypo_list[0].person = self.person
-        #         record.person = self.person
-        #         hypostases_to_update.append(hypo_list[0])
-        #         if save:
-        #             records_to_update.append(record)
-        #     else:
-        #         for hypostasis in hypo_list:
-        #             # In correct situation there should be only one related record for each hypostasis
-        #             related_record = hypostasis.grouprecord_set.get()
-        #             if related_record == record:
-        #                 # same as for amount == 1
-        #                 pass
-        #             elif related_record.group == self.group:
-        #                 continue
-        #             else:
-        #                 related_record.group = self.group
-        #                 related_record.person = self.person
-        #                 hypostasis.person = self.person
-        #                 hypostases_to_update.append(hypostasis)
-        #                 records_to_update.append(related_record)
-        #     previous_person.delete()
-        # if save:
-        #     bulk_update(records_to_update, update_fields=['person'])
