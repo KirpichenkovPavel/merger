@@ -4,23 +4,7 @@ from datetime import date
 from bulk_update.helper import bulk_update
 
 
-# def get_names_dict():
-#     names = {}
-#     for person in list(Person.objects.all()):
-#         key = " ".join((person.last_name,
-#                         person.first_name,
-#                         person.middle_name,
-#                         str(person.date_birth.day), "_",
-#                         str(person.date_birth.month), "_",
-#                         str(person.date_birth.year)))
-#         if key not in names:
-#             names[key] = [person.id]
-#         else:
-#             names[key].append(person.id)
-#     return names
-
-
-def form_new_groups(*, predicate_methods=['satisfies_new_group_condition']):
+def form_new_groups(*, predicate_methods=None):
     """Puts records into new groups if they do not have one yet and can meld with each other
 
     Each record will have only one group (person) or none if it's alone.
@@ -30,29 +14,32 @@ def form_new_groups(*, predicate_methods=['satisfies_new_group_condition']):
     More flexible methods may appear later.
     """
 
-    def keyF(gr):
+    def key_function(gr):
         """For sorting by birth date"""
         if gr.birth_date is None:
             return date.today()
         else:
             return gr.birth_date
-
+    if predicate_methods is None:
+        predicate_methods = ['satisfies_new_group_condition']
     if len(predicate_methods) == 0:
         raise AttributeError("Predicate methods must contain at least one method")
-    key = keyF
+    key = key_function
     print("Extracting records")
     unresolved_records = list(GroupRecord.objects.filter(group__isnull=True))
     unresolved_records.sort(key=key)
     record_groups = []
+    print("Sorting")
     for k, g in groupby(unresolved_records, key=key):
         record_groups.append(list(g))
     records_to_update = []
+    groups_to_update = []
+    print("Iterating through groups")
     for same_date_group in record_groups:
         new_groups = []
         for record_pair in combinations(same_date_group, 2):
             a = record_pair[0]
             b = record_pair[1]
-            #if a.satisfies_new_group_condition(b):
             if a.check_predicates(b, predicate_methods):
                 a_in_group = False
                 b_in_group = False
@@ -73,8 +60,12 @@ def form_new_groups(*, predicate_methods=['satisfies_new_group_condition']):
                 if not b_in_group:
                     b.group = new_group
                     records_to_update.append(b)
-    print("Have {0} items to save".format(len(records_to_update)))
+        groups_to_update.extend(new_groups)
+    print("Have {0} records to save".format(len(records_to_update)))
     bulk_update(records_to_update, update_fields=['group'])
+    print("Have {0} groups to update inconsistency".format(len(groups_to_update)))
+    mark_inconsistency(groups_to_update)
+    bulk_update(groups_to_update, update_fields=['inconsistent'])
     print("Done")
 
 
@@ -84,6 +75,7 @@ def distribute_records_to_existing_groups():
     print("Making groups dict")
     groups_dict = Group.get_groups_dict()
     records_to_update = []
+    groups_to_update = set()
     print("Handling records")
     for record in unresolved_records:
         print(record.id)
@@ -91,9 +83,14 @@ def distribute_records_to_existing_groups():
         if suitable_group is not None:
             record.group = suitable_group
             records_to_update.append(record)
+            groups_to_update.add(suitable_group)
     print("Have {0} records to update".format(len(records_to_update)))
     if len(records_to_update) > 0:
         bulk_update(records_to_update, update_fields=['group'])
+    print("Have {0} groups to update".format(len(groups_to_update)))
+    if len(groups_to_update) > 0:
+        mark_inconsistency(groups=list(groups_to_update))
+        bulk_update(groups_to_update, update_fields=['inconsistent'])
     print("Done")
 
 
@@ -106,13 +103,20 @@ def check_group_consistency(group_record_list):
     return True
 
 
-def mark_inconsistency():
+def mark_inconsistency(groups=None, groups_dict=None):
     """Update all groups consistency flag"""
     print("Extracting groups")
-    groups_dict = Group.get_groups_dict()
+    if groups_dict is None:
+        groups_dict = Group.get_groups_dict()
     groups_to_update = []
     print("Iterating through groups")
-    for group in groups_dict.keys():
+    if groups is None:
+        groups = groups_dict.keys()
+    else:
+        for group in groups:
+            if not isinstance(group, Group):
+                raise TypeError("groups must contain Group instances")
+    for group in groups:
         records = groups_dict[group]
         if check_group_consistency(records):
             if group.inconsistent:
@@ -128,9 +132,10 @@ def mark_inconsistency():
     print("Done")
 
 
-def merge_consistent_groups():
+def merge_consistent_groups(groups_dict=None):
     print("Making dict")
-    groups_dict = Group.get_groups_dict()
+    if groups_dict is None:
+        groups_dict = Group.get_groups_dict()
     records_to_update = []
     hypostases_to_update = []
     print("Iterating")
@@ -144,3 +149,13 @@ def merge_consistent_groups():
     bulk_update(records_to_update, update_fields=['person'])
     bulk_update(hypostases_to_update, update_fields=['person'])
     print("Done")
+
+
+def full_mass_update():
+    """At first compares orphan records with existing groups. Then tries to make new groups from remaining records."""
+    print("Distributing into existing groups")
+    distribute_records_to_existing_groups()
+    print("Making new groups")
+    form_new_groups(predicate_methods=['satisfies_new_group_condition'])
+    print("Updating consistency flag")
+    mark_inconsistency()

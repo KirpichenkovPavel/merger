@@ -1,6 +1,6 @@
 from django.db import models
 from main_remote.models import Student, Employee, Postgraduate
-from collections import namedtuple, Counter
+from collections import Counter
 from bulk_update.helper import bulk_update
 from main.exceptions import HypostasisIntegrityError
 from cached_property import cached_property, cached_property_ttl
@@ -152,6 +152,19 @@ class Group(models.Model):
     def get_groups_dict():
         return {group: list(group.group_record_set.all()) for group in Group.objects.all()}
 
+    def update_consistency(self):
+        records = list(self.group_record_set.all())
+        if len(records) > 1:
+            first = records[0]
+            others = records[1:]
+            for record in others:
+                if not first.completely_equal(record):
+                    self.inconsistent = True
+                    self.save()
+                    return
+            self.inconsistent = False
+            self.save()
+
 
 class GroupRecord(models.Model):
     """"""
@@ -224,7 +237,9 @@ class GroupRecord(models.Model):
 
     def satisfies_new_group_condition(self, another_record):
         """No date check, used only in sorted-by-dates groups"""
-        return self.has_equal_full_name(another_record) or self.has_equal_last_and_middle_name(another_record) or self.has_equal_first_and_middle_name(another_record)
+        return self.has_equal_full_name(another_record) or \
+               self.has_equal_last_and_middle_name(another_record) or \
+               self.has_equal_first_and_middle_name(another_record)
 
     def satisfies_existing_group_condition(self, another_record):
         if self.has_equal_date(another_record):
@@ -236,7 +251,7 @@ class GroupRecord(models.Model):
     def compare_with_list(self, record_list):
         """ Full check with all records in list. Intended for inconsistent groups."""
         if self.group is not None:
-            raise AttributeError('group record should not have group yet')
+            raise AttributeError('Group record should not have group yet')
         else:
             for record_to_compare in record_list:
                 if self.satisfies_existing_group_condition(record_to_compare):
@@ -294,6 +309,21 @@ class GroupRecord(models.Model):
             bulk_update(hypostases_to_update, update_fields=['person'])
         else:
             return hypostases_to_update
+
+    def form_new_group(self, predicate_methods=None):
+        """Finds first possible record to merge. Returns new Group or None"""
+        if predicate_methods is None:
+            predicate_methods = ['completely_equal']
+        for record in GroupRecord.objects.filter(group__isnull=True):
+            if self.check_predicates(record, predicate_methods):
+                g = Group()
+                g.save()
+                record.group = g
+                self.group = g
+                record.save()
+                self.save()
+
+
 
     def merge_records_by_persons(self, other_records, save=True):
         """This merge also updates related records from other groups if they have reference to the same person.
