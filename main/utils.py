@@ -1,6 +1,5 @@
 from main.models import Hypostasis, Person, Group, GroupRecord
 from main_remote.models import Student, Employee, Postgraduate
-from main.merge import get_instance_from_hypostasis
 from bulk_update.helper import bulk_update
 import jellyfish as jf
 
@@ -45,7 +44,7 @@ def create_persons(hypo_list):
     hypostases_to_update = []
     print("Making")
     for h in hypo_list:
-        instance = get_instance_from_hypostasis(h)
+        instance = h.non_empty_instance
         new_person = Person(last_name=instance.last_name,
                             first_name=instance.first_name,
                             middle_name=instance.middle_name,
@@ -62,20 +61,13 @@ def create_persons(hypo_list):
 def create_group_records():
     """Creates group records for initial data for test purposes."""
     records = []
-    # groups = []
-    # print("\nSaving groups\n")
-    # for j in range(Hypostasis.objects.count()):
-    #     print("\n{0}\n".format(j))
-    #     g = Group()
-    #     groups.append(g)
-    # Group.objects.bulk_create(groups)
     print("\nCreating records\n")
     i = 0
-    #groups = list(Group.objects.all())
     for hypo in list(Hypostasis.objects.all()):
+        if hypo.grouprecord_set.count() > 0:
+            continue
         print("\n{0}\n".format(i))
-        instance = hypo.get_non_empty_instance()
-        #group = groups.pop()
+        instance = hypo.non_empty_instance
         records.append(GroupRecord(hypostasis=hypo,
                                    person=hypo.person,
                                    group=None,
@@ -86,6 +78,7 @@ def create_group_records():
         i += 1
     print("\nSaving records\n")
     GroupRecord.objects.bulk_create(records)
+    print("Done")
 
 
 def direct_search():
@@ -104,10 +97,25 @@ def direct_search():
 def showjf(gd):
     for group, records in gd.items():
         if group.inconsistent:
-            name1 = records[0].first_name
-            name2 = records[1].first_name
+            if records[0].first_name != records[1].first_name:
+                name1 = records[0].first_name
+                name2 = records[1].first_name
+            else:
+                name1 = records[0].last_name
+                name2 = records[1].last_name
             print("{0} {1} l:{2} j:{3} j-w:{4}".format(name1,
                                                        name2,
                                                        jf.levenshtein_distance(name1, name2),
                                                        jf.jaro_distance(name1, name2),
                                                        jf.jaro_winkler(name1, name2)))
+
+
+def show_close_records(tolerance):
+    print(tolerance)
+    gd = Group.get_groups_dict()
+    for g, grs in gd.items():
+        if g.inconsistent:
+            for gr in grs[1:]:
+                if grs[0].close_by_jaro_winkler(gr, 'last_name', tolerance) or \
+                        grs[0].close_by_jaro_winkler(gr, 'first_name', tolerance):
+                    print("{} {}".format(grs[0], gr))

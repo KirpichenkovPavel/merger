@@ -6,6 +6,7 @@ from main.exceptions import HypostasisIntegrityError
 from cached_property import cached_property, cached_property_ttl
 from merger.local_settings import HYPOSTASIS_CACHE_TTL
 from inspect import getmembers, ismethod
+from jellyfish import jaro_winkler, levenshtein_distance
 
 
 class Person(models.Model):
@@ -56,7 +57,7 @@ class Person(models.Model):
                 return hypostasis
 
     def merge_persons(self, person_list):
-        """Merge persons in the list with the first peson."""
+        """Merge persons in the list with the first peson. OUT OF DATE. DOES NOT CONSIDER GROUP RECORDS"""
         for person in person_list:
             if not isinstance(person, Person):
                 raise TypeError("Merge persons: person in collection is not a Person type object.")
@@ -78,16 +79,6 @@ class Person(models.Model):
             attributes[attribute].update(
                 [getattr(x.get_non_empty_instance(), attribute) for x in list(self.hypostasis_set.all())])
         return attributes
-
-    def check_pre_merge(self, person, **kwargs):
-        """Check equivalence with another person and return metric."""
-        return 100
-
-
-    @classmethod
-    def get_all_attrdicts(cls, *, attributes):
-        """Get attribute dict for each person, return list of them"""
-        return [(person,person.get_attribute_dict(attributes=attributes)) for person in list(Person.objects.all())]
 
     def __str__(self):
         return "{0} {1} {2}".format(self.last_name, self.first_name, self.middle_name)
@@ -167,8 +158,17 @@ class Group(models.Model):
 
 
 class GroupRecord(models.Model):
-    """"""
+    """Записи для предварительного объединения в группы
 
+    Объединение ведется по указанным в записях группам.
+    Если группа не указана, для записи пока не найдено группы.
+    Запись не может одновременно находиться в нескольких группах. Возможно, есть случаи, когда это будет неверно,
+    но с концептуальной точки зрения запись может относиться только к одному человеку.
+    Объединение в Person проводится на основании сформированных групп, после объединения записи не удаляются.
+    Объединение заключается в перекидывании ссылок на персону в записи и связанной ипостаси.
+    Каждой записи соответствует ипостась, необходимо поддержание целостности: ссылки на персону в записи и ипостаси
+    должны совпадать, данные в записи и в связанной с ипостасью сущности должны быть одинаковыми.
+    """
     hypostasis = models.ForeignKey(Hypostasis)
     person = models.ForeignKey(Person, null=True, on_delete=models.SET_NULL)
     group = models.ForeignKey(Group, null=True, related_name='group_record_set')
@@ -176,10 +176,13 @@ class GroupRecord(models.Model):
     first_name = models.CharField(max_length=255, null=True)
     middle_name = models.CharField(max_length=255, null=True)
     birth_date = models.DateField(null=True)
+    forbidden_groups = models.ManyToManyField(Group)
+    forbidden_group_records = models.ManyToManyField("self")
 
     PREDICATE_METHODS = ["completely_equal", "has_equal_full_name", "has_equal_first_and_middle_name", "has_equal_date",
-                         "has_equal_last_and_middle_name", "satisfies_new_group_condition",
-                         "satisfies_existing_group_condition"]
+                         "has_equal_last_and_middle_name", "satisfies_new_group_condition", "has_equal_last_name",
+                         "has_equal_first_name", "has_equal_middle_name", "satisfies_existing_group_condition",
+                         "close_by_fuzzy_metric"]
 
     def __str__(self):
         return "{0} {1} {2} {3}".format(self.last_name, self.first_name, self.middle_name, self.birth_date)
@@ -206,13 +209,13 @@ class GroupRecord(models.Model):
                 return False
         return True
 
-    def check_predicates(self, another_record, predicate_methods):
+    def check_predicates(self, predicate_methods, *args, **kwargs):
         """Returns True only if all predicates return True"""
         for predicate in predicate_methods:
             if predicate not in GroupRecord.PREDICATE_METHODS:
                 raise AttributeError("{} is not an allowed predicate method")
         for predicate in predicate_methods:
-            if not self.call_method(predicate, another_record):
+            if not self.call_method(predicate, *args, **kwargs):
                 return False
         return True
 
@@ -224,21 +227,43 @@ class GroupRecord(models.Model):
         attributes = ['last_name', 'first_name', 'middle_name']
         return self.compare_attributes(another_record=another_record, attribute_list=attributes)
 
-    def has_equal_first_and_middle_name(self, another_record):
-        attributes = ['first_name', 'middle_name']
-        return self.compare_attributes(another_record=another_record, attribute_list=attributes)
+    def has_equal_last_name(self, another_record):
+        return self.compare_attribute(another_record=another_record, attribute='last_name')
+
+    def has_equal_first_name(self, another_record):
+        return self.compare_attribute(another_record=another_record, attribute='first_name')
+
+    def has_equal_middle_name(self, another_record):
+        return self.compare_attribute(another_record=another_record, attribute='middle_name')
 
     def has_equal_date(self, another_record):
         return self.compare_attribute(another_record=another_record, attribute='birth_date')
+
+    def has_equal_first_and_middle_name(self, another_record):
+        attributes = ['first_name', 'middle_name']
+        return self.compare_attributes(another_record=another_record, attribute_list=attributes)
 
     def has_equal_last_and_middle_name(self, another_record):
         attributes = ['last_name', 'middle_name']
         return self.compare_attributes(another_record=another_record, attribute_list=attributes)
 
+    def close_by_fuzzy_metric(self, another_record, attribute, tolerance=0.86):
+        """Checks that all attributes except chosen are equal and the chosen one is close enough"""
+        attributes = ['last_name', 'first_name', 'middle_name', 'birth_date']
+        if attribute not in attributes:
+            raise AttributeError('{} is a wrong attribute'.format(attribute))
+        else:
+            attributes.remove(attribute)
+            if self.compare_attributes(another_record, attributes):
+                str1 = getattr(self, attribute)
+                str2 = getattr(another_record, attribute)
+                if levenshtein_distance(str1, str2) == 1 or jaro_winkler(str1, str2) > tolerance:
+                    return True
+            return False
+
     def satisfies_new_group_condition(self, another_record):
         """No date check, used only in sorted-by-dates groups"""
-        return self.has_equal_full_name(another_record) or \
-               self.has_equal_last_and_middle_name(another_record) or \
+        return self.has_equal_last_and_middle_name(another_record) or \
                self.has_equal_first_and_middle_name(another_record)
 
     def satisfies_existing_group_condition(self, another_record):
@@ -247,6 +272,8 @@ class GroupRecord(models.Model):
                 return True
         else:
             return False
+
+
 
     def compare_with_list(self, record_list):
         """ Full check with all records in list. Intended for inconsistent groups."""
@@ -290,8 +317,7 @@ class GroupRecord(models.Model):
     def merge_records_by_hypostases(self, other_records, save=True):
         """No checks about group being made assuming this checks are already done more efficiently."""
         hypostases_to_update = []
-        if save:
-            records_to_update = []
+        records_to_update = []
         for record in other_records:
             previous_person = record.hypostasis.person
             if previous_person == self.person:
@@ -322,8 +348,6 @@ class GroupRecord(models.Model):
                 self.group = g
                 record.save()
                 self.save()
-
-
 
     def merge_records_by_persons(self, other_records, save=True):
         """This merge also updates related records from other groups if they have reference to the same person.

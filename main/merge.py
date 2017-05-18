@@ -90,7 +90,7 @@ def distribute_records_to_existing_groups():
     print("Have {0} groups to update".format(len(groups_to_update)))
     if len(groups_to_update) > 0:
         mark_inconsistency(groups=list(groups_to_update))
-        bulk_update(groups_to_update, update_fields=['inconsistent'])
+        bulk_update(list(groups_to_update), update_fields=['inconsistent'])
     print("Done")
 
 
@@ -108,7 +108,7 @@ def mark_inconsistency(groups=None, groups_dict=None):
     print("Extracting groups")
     if groups_dict is None:
         groups_dict = Group.get_groups_dict()
-    groups_to_update = []
+    groups_to_update = set()
     print("Iterating through groups")
     if groups is None:
         groups = groups_dict.keys()
@@ -121,14 +121,14 @@ def mark_inconsistency(groups=None, groups_dict=None):
         if check_group_consistency(records):
             if group.inconsistent:
                 group.inconsistent = False
-                groups_to_update.append(group)
+                groups_to_update.add(group)
         else:
             if not group.inconsistent:
                 group.inconsistent = True
-                groups_to_update.append(group)
+                groups_to_update.add(group)
     print("In-memory changes done")
     print("{} groups will be changed".format(len(groups_to_update)))
-    bulk_update(groups_to_update, update_fields=['inconsistent'])
+    bulk_update(list(groups_to_update), update_fields=['inconsistent'])
     print("Done")
 
 
@@ -157,5 +157,3 @@ def full_mass_update():
     distribute_records_to_existing_groups()
     print("Making new groups")
     form_new_groups(predicate_methods=['satisfies_new_group_condition'])
-    print("Updating consistency flag")
-    mark_inconsistency()
