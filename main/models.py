@@ -7,6 +7,9 @@ from cached_property import cached_property, cached_property_ttl
 from merger.local_settings import HYPOSTASIS_CACHE_TTL
 from inspect import getmembers, ismethod
 from jellyfish import jaro_winkler, levenshtein_distance
+from itertools import combinations
+from main.decorators import check_forbidden_records
+from django.utils.decorators import method_decorator
 
 
 class Person(models.Model):
@@ -74,7 +77,7 @@ class Person(models.Model):
         """
         attributes = {name: Counter() for name in attributes}
         for attribute in attributes:
-            if not isinstance(attribute,str):
+            if not isinstance(attribute, str):
                 raise TypeError("{0} is not a string.".format(attribute))
             attributes[attribute].update(
                 [getattr(x.get_non_empty_instance(), attribute) for x in list(self.hypostasis_set.all())])
@@ -141,7 +144,7 @@ class Group(models.Model):
 
     @staticmethod
     def get_groups_dict():
-        return {group: list(group.group_record_set.all()) for group in Group.objects.all()}
+        return {group: list(group.grouprecord_set.all()) for group in Group.objects.all()}
 
     def update_consistency(self):
         records = list(self.group_record_set.all())
@@ -156,6 +159,15 @@ class Group(models.Model):
             self.inconsistent = False
             self.save()
 
+    def unmake(self):
+        """Split all records in group and delete it"""
+        records = list(self.grouprecord_set.all())
+        for rec1, rec2 in combinations(records, 2):
+            rec1.forbidden_group_records.add(rec2)
+            rec2.forbidden_group_records.add(rec1)
+        bulk_update(records, update_fields=['forbidden_group_records'])
+        self.delete()
+
 
 class GroupRecord(models.Model):
     """Записи для предварительного объединения в группы
@@ -169,25 +181,25 @@ class GroupRecord(models.Model):
     Каждой записи соответствует ипостась, необходимо поддержание целостности: ссылки на персону в записи и ипостаси
     должны совпадать, данные в записи и в связанной с ипостасью сущности должны быть одинаковыми.
     """
-    hypostasis = models.ForeignKey(Hypostasis)
+    hypostasis = models.ForeignKey(Hypostasis, on_delete=models.CASCADE)
     person = models.ForeignKey(Person, null=True, on_delete=models.SET_NULL)
-    group = models.ForeignKey(Group, null=True, related_name='group_record_set')
+    group = models.ForeignKey(Group, null=True, on_delete=models.SET_NULL)
     last_name = models.CharField(max_length=255, null=True)
     first_name = models.CharField(max_length=255, null=True)
     middle_name = models.CharField(max_length=255, null=True)
     birth_date = models.DateField(null=True)
-    forbidden_groups = models.ManyToManyField(Group)
+    forbidden_groups = models.ManyToManyField(Group, related_name='forbidden_group_record_set')
     forbidden_group_records = models.ManyToManyField("self")
 
     PREDICATE_METHODS = ["completely_equal", "has_equal_full_name", "has_equal_first_and_middle_name", "has_equal_date",
                          "has_equal_last_and_middle_name", "satisfies_new_group_condition", "has_equal_last_name",
                          "has_equal_first_name", "has_equal_middle_name", "satisfies_existing_group_condition",
-                         "close_by_fuzzy_metric"]
+                         "close_by_fuzzy_metric", "forbidden"]
 
     def __str__(self):
         return "{0} {1} {2} {3}".format(self.last_name, self.first_name, self.middle_name, self.birth_date)
 
-    def call_method(self, method_name, *args, **kwargs):
+    def _call_method(self, method_name, *args, **kwargs):
         names = [tup[0] for tup in getmembers(self, predicate=ismethod)]
         if method_name not in names:
             raise AttributeError("{} is not a method of GroupRecord".format(method_name))
@@ -195,7 +207,7 @@ class GroupRecord(models.Model):
             method = getattr(self, method_name)
             return method(*args, **kwargs)
 
-    def compare_attribute(self, another_record, attribute, another_attribute=None):
+    def _compare_attribute(self, another_record, attribute, another_attribute=None):
         if another_attribute is None:
             another_attribute = attribute
         if getattr(self, attribute) == getattr(another_record, another_attribute):
@@ -203,9 +215,9 @@ class GroupRecord(models.Model):
         else:
             return False
 
-    def compare_attributes(self, another_record, attribute_list):
+    def _compare_attributes(self, another_record, attribute_list):
         for attribute in attribute_list:
-            if not self.compare_attribute(another_record=another_record, attribute=attribute):
+            if not self._compare_attribute(another_record=another_record, attribute=attribute):
                 return False
         return True
 
@@ -215,65 +227,71 @@ class GroupRecord(models.Model):
             if predicate not in GroupRecord.PREDICATE_METHODS:
                 raise AttributeError("{} is not an allowed predicate method")
         for predicate in predicate_methods:
-            if not self.call_method(predicate, *args, **kwargs):
+            if not self._call_method(predicate, *args, **kwargs):
                 return False
         return True
 
     def completely_equal(self, another_record):
         attributes = ['last_name', 'first_name', 'middle_name', 'birth_date']
-        return self.compare_attributes(another_record=another_record, attribute_list=attributes)
+        return self._compare_attributes(another_record=another_record, attribute_list=attributes)
 
     def has_equal_full_name(self, another_record):
         attributes = ['last_name', 'first_name', 'middle_name']
-        return self.compare_attributes(another_record=another_record, attribute_list=attributes)
+        return self._compare_attributes(another_record=another_record, attribute_list=attributes)
 
     def has_equal_last_name(self, another_record):
-        return self.compare_attribute(another_record=another_record, attribute='last_name')
+        return self._compare_attribute(another_record=another_record, attribute='last_name')
 
     def has_equal_first_name(self, another_record):
-        return self.compare_attribute(another_record=another_record, attribute='first_name')
+        return self._compare_attribute(another_record=another_record, attribute='first_name')
 
     def has_equal_middle_name(self, another_record):
-        return self.compare_attribute(another_record=another_record, attribute='middle_name')
+        return self._compare_attribute(another_record=another_record, attribute='middle_name')
 
     def has_equal_date(self, another_record):
-        return self.compare_attribute(another_record=another_record, attribute='birth_date')
+        return self._compare_attribute(another_record=another_record, attribute='birth_date')
 
     def has_equal_first_and_middle_name(self, another_record):
         attributes = ['first_name', 'middle_name']
-        return self.compare_attributes(another_record=another_record, attribute_list=attributes)
+        return self._compare_attributes(another_record=another_record, attribute_list=attributes)
 
     def has_equal_last_and_middle_name(self, another_record):
         attributes = ['last_name', 'middle_name']
-        return self.compare_attributes(another_record=another_record, attribute_list=attributes)
+        return self._compare_attributes(another_record=another_record, attribute_list=attributes)
 
     def close_by_fuzzy_metric(self, another_record, attribute, tolerance=0.86):
         """Checks that all attributes except chosen are equal and the chosen one is close enough"""
-        attributes = ['last_name', 'first_name', 'middle_name', 'birth_date']
+        attributes = ['last_name', 'first_name', 'middle_name']
         if attribute not in attributes:
             raise AttributeError('{} is a wrong attribute'.format(attribute))
         else:
             attributes.remove(attribute)
-            if self.compare_attributes(another_record, attributes):
+            attributes.append('birth_date')
+            if self._compare_attributes(another_record, attributes):
                 str1 = getattr(self, attribute)
                 str2 = getattr(another_record, attribute)
-                if levenshtein_distance(str1, str2) == 1 or jaro_winkler(str1, str2) > tolerance:
+                if str1 is None or str2 is None:
+                    return True
+                elif (levenshtein_distance(str1, str2) == 1) or (jaro_winkler(str1, str2) > tolerance):
                     return True
             return False
 
+    def forbidden(self, another_record):
+        return another_record in self.forbidden_group_records.all()
+
     def satisfies_new_group_condition(self, another_record):
         """No date check, used only in sorted-by-dates groups"""
-        return self.has_equal_last_and_middle_name(another_record) or \
-               self.has_equal_first_and_middle_name(another_record)
+        return self.close_by_fuzzy_metric(another_record, 'first_name') or \
+                self.close_by_fuzzy_metric(another_record, 'last_name') or \
+                self.close_by_fuzzy_metric(another_record, 'middle_name')
 
     def satisfies_existing_group_condition(self, another_record):
-        if self.has_equal_date(another_record):
-            if self.satisfies_new_group_condition(another_record):
-                return True
-        else:
-            return False
-
-
+        return self.check_predicates(['has_equal_dates', 'satisfies_new_group_condition'], another_record)
+        # if self.has_equal_date(another_record):
+        #     if self.satisfies_new_group_condition(another_record):
+        #         return True
+        # else:
+        #     return False
 
     def compare_with_list(self, record_list):
         """ Full check with all records in list. Intended for inconsistent groups."""
@@ -281,13 +299,17 @@ class GroupRecord(models.Model):
             raise AttributeError('Group record should not have group yet')
         else:
             for record_to_compare in record_list:
-                if self.satisfies_existing_group_condition(record_to_compare):
+                if self.forbidden(record_to_compare):
+                    return False
+                elif self.satisfies_existing_group_condition(record_to_compare):
                     return True
             return False
 
     def seek_for_group(self, group_dict):
         """In group_dict key must be group and value must be list of records"""
         for group in group_dict:
+            if group in self.forbidden_groups.all():
+                continue
             if group.inconsistent:
                 if self.compare_with_list(group_dict[group]):
                     return group
@@ -303,19 +325,24 @@ class GroupRecord(models.Model):
             self.save()
             return suitable_group
 
-    def find_group_from_base(self):
-        """No need to use - no advantages in speed compared to dict variant"""
-        for group in list(Group.objects.all()):
-            related_records = list(group.grouprecord_set.all())
-            if group.inconsistent:
-                if self.compare_with_list(related_records):
-                    return group
-            else:
-                if self.satisfies_existing_group_condition(related_records[0]):
-                    return group
+    # def find_group_from_base(self):
+    #     """No need to use - no advantages in speed compared to dict variant"""
+    #     for group in list(Group.objects.all()):
+    #         related_records = list(group.grouprecord_set.all())
+    #         if group.inconsistent:
+    #             if self.compare_with_list(related_records):
+    #                 return group
+    #         else:
+    #             if self.satisfies_existing_group_condition(related_records[0]):
+    #                 return group
 
     def merge_records_by_hypostases(self, other_records, save=True):
-        """No checks about group being made assuming this checks are already done more efficiently."""
+        """Unite all records and related hypostases around this record's person.
+
+        This record's person becomes the person referensed by other records and their related hypostases.
+        All empty persons (not referenced by any hypostases) are removed.
+        No checks about group being made assuming this checks are already done more efficiently, when
+        this group was created."""
         hypostases_to_update = []
         records_to_update = []
         for record in other_records:
@@ -336,18 +363,19 @@ class GroupRecord(models.Model):
         else:
             return hypostases_to_update
 
-    def form_new_group(self, predicate_methods=None):
-        """Finds first possible record to merge. Returns new Group or None"""
+    def make_new_group(self, predicate_methods=None):
+        """Seek for record to merge. Make new group if record exists. Return new Group or None"""
         if predicate_methods is None:
-            predicate_methods = ['completely_equal']
+            predicate_methods = ['has_equal_date', 'satisfies_new_group_condition']
         for record in GroupRecord.objects.filter(group__isnull=True):
-            if self.check_predicates(record, predicate_methods):
+            if self.check_predicates(predicate_methods, record):
                 g = Group()
                 g.save()
                 record.group = g
                 self.group = g
                 record.save()
                 self.save()
+                return g
 
     def merge_records_by_persons(self, other_records, save=True):
         """This merge also updates related records from other groups if they have reference to the same person.
@@ -375,3 +403,34 @@ class GroupRecord(models.Model):
             bulk_update(records, update_fields=['person', 'group'])
         for person in persons:
             person.delete()
+
+    def remove_from_group(self, group_dict=None):
+        """Add group to forbidden and check for new groups"""
+        if group_dict is None:
+            group_dict = Group.get_groups_dict()
+        if self.group is not None:
+            self.forbidden_groups.add(self.group)
+            self.group = None
+            self.save(update_fields=['group', 'forbidden_groups'])
+            if self.seek_for_group_and_save(group_dict) is None:
+                self.make_new_group(predicate_methods=['has_equal_date', 'satisfies_new_group_condition'])
+
+    def remove_record_from_forbidden(self, another_record):
+        """Remove another record from this record's forbidden records list and vice versa"""
+        if not isinstance(another_record, GroupRecord):
+            raise TypeError('{} is not a GroupRecord instance'.format(another_record))
+        if another_record in self.forbidden_group_records.all():
+            self.forbidden_group_records.remove(another_record)
+            another_record.forbidden_group_records.remove(self)
+            self.save()
+            another_record.save()
+        else:
+            raise AttributeError('GroupRecord {} is not forbidden for this record'.format(another_record))
+
+    def remove_group_from_forbidden(self, group):
+        """Remove group from this record's restricted groups list"""
+        if not isinstance(group, Group):
+            raise AttributeError('{} is not a Group instance'.format(group))
+        if group in self.forbidden_groups.all():
+            self.forbidden_groups.remove(group)
+            self.save()

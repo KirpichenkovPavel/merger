@@ -35,12 +35,15 @@ def form_new_groups(*, predicate_methods=None):
     records_to_update = []
     groups_to_update = []
     print("Iterating through groups")
+    i = 0
     for same_date_group in record_groups:
+        i += 1
+        print("{} date groups handled".format(i))
         new_groups = []
         for record_pair in combinations(same_date_group, 2):
             a = record_pair[0]
             b = record_pair[1]
-            if a.check_predicates(b, predicate_methods):
+            if a.check_predicates(predicate_methods, b):
                 a_in_group = False
                 b_in_group = False
                 new_group = None
