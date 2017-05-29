@@ -4,7 +4,7 @@ from datetime import date
 from bulk_update.helper import bulk_update
 
 
-def form_new_groups(*, predicate_methods=None):
+def create_new_groups(*, predicate_methods=None):
     """Puts records into new groups if they do not have one yet and can meld with each other
 
     Each record will have only one group (person) or none if it's alone.
@@ -36,9 +36,10 @@ def form_new_groups(*, predicate_methods=None):
     groups_to_update = []
     print("Iterating through groups")
     i = 0
+    total = len(record_groups)
     for same_date_group in record_groups:
         i += 1
-        print("{} date groups handled".format(i))
+        print("{} out of {} date groups handled".format(i, total))
         new_groups = []
         for record_pair in combinations(same_date_group, 2):
             a = record_pair[0]
@@ -139,18 +140,22 @@ def merge_consistent_groups(groups_dict=None):
     print("Making dict")
     if groups_dict is None:
         groups_dict = Group.get_groups_dict()
-    records_to_update = []
-    hypostases_to_update = []
+    records_for_update = []
+    hypostases_for_update = []
+    persons_to_delete = set()
     print("Iterating")
     for group, records in groups_dict.items():
         print(group.id)
         if not group.inconsistent and len(records) > 1:
-            changed_hypos = records[0].merge_records_by_hypostases(records[1:], save=False)
-            hypostases_to_update.extend(changed_hypos) if len(changed_hypos) > 0 else None
-            records_to_update.extend(records[1:])
+            changed_hypos, unnecessary_persons = records[0].merge_records_by_hypostases(records[1:], save=False)
+            hypostases_for_update.extend(changed_hypos) if len(changed_hypos) > 0 else None
+            records_for_update.extend(records[1:])
+            persons_to_delete = persons_to_delete.union(unnecessary_persons)
     print("Saving")
-    bulk_update(records_to_update, update_fields=['person'])
-    bulk_update(hypostases_to_update, update_fields=['person'])
+    bulk_update(records_for_update, update_fields=['person'])
+    bulk_update(hypostases_for_update, update_fields=['person'])
+    for person in persons_to_delete:
+        person.delete()
     print("Done")
 
 
@@ -159,4 +164,4 @@ def full_mass_update():
     print("Distributing into existing groups")
     distribute_records_to_existing_groups()
     print("Making new groups")
-    form_new_groups(predicate_methods=['satisfies_new_group_condition'])
+    create_new_groups(predicate_methods=['satisfies_new_group_condition'])

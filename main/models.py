@@ -210,7 +210,12 @@ class GroupRecord(models.Model):
     def _compare_attribute(self, another_record, attribute, another_attribute=None):
         if another_attribute is None:
             another_attribute = attribute
-        if getattr(self, attribute) == getattr(another_record, another_attribute):
+        a1 = getattr(self, attribute)
+        a2 = getattr(another_record, another_attribute)
+        if isinstance(a1, str):
+            if len(a1) == 0 or len(a2) == 0:
+                return True
+        if a1 == a2:
             return True
         else:
             return False
@@ -280,7 +285,7 @@ class GroupRecord(models.Model):
         return another_record in self.forbidden_group_records.all()
 
     def satisfies_new_group_condition(self, another_record):
-        """No date check, used only in sorted-by-dates groups"""
+        """No date check, used only in sorted-by-date groups"""
         return self.close_by_fuzzy_metric(another_record, 'first_name') or \
                 self.close_by_fuzzy_metric(another_record, 'last_name') or \
                 self.close_by_fuzzy_metric(another_record, 'middle_name')
@@ -343,25 +348,29 @@ class GroupRecord(models.Model):
         All empty persons (not referenced by any hypostases) are removed.
         No checks about group being made assuming this checks are already done more efficiently, when
         this group was created."""
-        hypostases_to_update = []
-        records_to_update = []
+        hypostases_for_update = []
+        records_for_update = []
+        persons_to_delete = set()
         for record in other_records:
             previous_person = record.hypostasis.person
             if previous_person == self.person:
                 continue
             amount = previous_person.hypostasis_set.count()
             record.hypostasis.person = self.person
-            hypostases_to_update.append(record.hypostasis)
+            hypostases_for_update.append(record.hypostasis)
             record.person = self.person
             if amount < 2:
-                previous_person.delete()
+                #previous_person.delete()
+                persons_to_delete.add(previous_person)
             if save:
-                records_to_update.append(record)
+                records_for_update.append(record)
         if save:
-            bulk_update(records_to_update, update_fields=['person'])
-            bulk_update(hypostases_to_update, update_fields=['person'])
+            bulk_update(records_for_update, update_fields=['person'])
+            bulk_update(hypostases_for_update, update_fields=['person'])
+            for person in persons_to_delete:
+                person.delete()
         else:
-            return hypostases_to_update
+            return hypostases_for_update, persons_to_delete
 
     def make_new_group(self, predicate_methods=None):
         """Seek for record to merge. Make new group if record exists. Return new Group or None"""

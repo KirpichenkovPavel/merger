@@ -1,7 +1,18 @@
 from main.models import Hypostasis, Person, Group, GroupRecord
 from main_remote.models import Student, Employee, Postgraduate
 from bulk_update.helper import bulk_update
+from crequest.middleware import CrequestMiddleware
+from django.conf import settings
+from django_remote_model.util.util import shell_authenticate, add_bp_credentials
+from difflib import SequenceMatcher
 import jellyfish as jf
+
+
+def bp_user_auth():
+    shell_authenticate(settings.MANAGEMENT_USER_NAME, settings.MANAGEMENT_USER_PASS)
+    request = CrequestMiddleware.get_request()
+    request = add_bp_credentials(request, settings.MANAGEMENT_BP_NAME, settings.MANAGEMENT_BP_PASS)
+    CrequestMiddleware.set_request(request)
 
 
 def create_hypostases():
@@ -58,18 +69,20 @@ def create_persons(hypo_list):
     bulk_update(hypostases_to_update, update_fields=['person'])
 
 
-def create_group_records():
+def create_group_records(no_doubles=False):
     """Creates group records for initial data for test purposes."""
     records = []
     print("\nCreating records\n")
     i = 0
     for hypo in list(Hypostasis.objects.all()):
-        if hypo.grouprecord_set.count() > 0:
-            continue
-        print("\n{0}\n".format(i))
+        if no_doubles:
+            if hypo.grouprecord_set.count() > 0:
+                continue
+        print("{0}".format(i))
         instance = hypo.non_empty_instance
+        person = hypo.person
         records.append(GroupRecord(hypostasis=hypo,
-                                   person=hypo.person,
+                                   person=person,
                                    group=None,
                                    last_name=instance.last_name,
                                    first_name=instance.first_name,
@@ -79,6 +92,14 @@ def create_group_records():
     print("\nSaving records\n")
     GroupRecord.objects.bulk_create(records)
     print("Done")
+
+
+def update_group_record_persons():
+    grs = list(GroupRecord.objects.all())
+    for gr in grs:
+        print(gr.id)
+        gr.person = gr.hypostasis.person
+    bulk_update(grs, update_fields=['person'])
 
 
 def direct_search():
@@ -94,7 +115,7 @@ def direct_search():
     return result
 
 
-def showjf(gd):
+def show_metrics(gd):
     for group, records in gd.items():
         if group.inconsistent:
             if records[0].first_name != records[1].first_name:
@@ -119,3 +140,27 @@ def show_close_records(tolerance):
                 if grs[0].close_by_jaro_winkler(gr, 'last_name', tolerance) or \
                         grs[0].close_by_jaro_winkler(gr, 'first_name', tolerance):
                     print("{} {}".format(grs[0], gr))
+
+
+def calc_xtra():
+    ps = list(Person.objects.all().prefetch_related('hypostasis_set'))
+    cnt = 0
+    item = 0
+    for p in ps:
+        print(item)
+        item += 1
+        cnt += p.hypostasis_set.count() - 1
+    print(cnt)
+
+
+def gr_update_persons():
+    lst = list(GroupRecord.objects.all())
+    i = 0
+    ttl = len(lst)
+    for gr in lst:
+        print("{} of {} records".format(i, ttl))
+        gr.person = gr.hypostasis.person
+        i += 1
+    print("Saving")
+    bulk_update(lst, update_fields=['person'])
+    print("Done")
