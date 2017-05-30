@@ -13,3 +13,8 @@ def check_forbidden_records(method):
         else:
             return method(*args, **kwargs)
     return inner
+
+
+def predicate(method):
+    method._is_a_predicate_method = True
+    return method

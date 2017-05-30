@@ -8,7 +8,7 @@ from merger.local_settings import HYPOSTASIS_CACHE_TTL
 from inspect import getmembers, ismethod
 from jellyfish import jaro_winkler, levenshtein_distance
 from itertools import combinations
-from main.decorators import check_forbidden_records
+from main.decorators import predicate
 from django.utils.decorators import method_decorator
 
 
@@ -141,6 +141,7 @@ class Hypostasis(models.Model):
 
 class Group(models.Model):
     inconsistent = models.BooleanField(default=False)
+    birth_date = models.DateField(null=True)
 
     @staticmethod
     def get_groups_dict():
@@ -191,28 +192,40 @@ class GroupRecord(models.Model):
     forbidden_groups = models.ManyToManyField(Group, related_name='forbidden_group_record_set')
     forbidden_group_records = models.ManyToManyField("self")
 
-    PREDICATE_METHODS = ["completely_equal", "has_equal_full_name", "has_equal_first_and_middle_name", "has_equal_date",
-                         "has_equal_last_and_middle_name", "satisfies_new_group_condition", "has_equal_last_name",
-                         "has_equal_first_name", "has_equal_middle_name", "satisfies_existing_group_condition",
-                         "close_by_fuzzy_metric", "forbidden"]
+    # PREDICATE_METHODS = ["completely_equal", "has_equal_full_name", "has_equal_first_and_middle_name", "has_equal_date",
+    #                      "has_equal_last_and_middle_name", "satisfies_new_group_condition", "has_equal_last_name",
+    #                      "has_equal_first_name", "has_equal_middle_name", "satisfies_existing_group_condition",
+    #                      "close_by_fuzzy_metric", "forbidden"]
+
+    # Set of method names, shared among instances. Used in _call_predicate as a cache.
+    __predicate_methods = set()
 
     def __str__(self):
         return "{0} {1} {2} {3}".format(self.last_name, self.first_name, self.middle_name, self.birth_date)
 
-    def _call_method(self, method_name, *args, **kwargs):
-        names = [tup[0] for tup in getmembers(self, predicate=ismethod)]
-        if method_name not in names:
-            raise AttributeError("{} is not a method of GroupRecord".format(method_name))
+    def _call_predicate(self, method_name, *args, **kwargs):
+        """Executes method with chosen name if it is a predicate method. Decorate with @predicate to use method here."""
+        if method_name in self.__predicate_methods:
+            # Method name has been checked already.
+            return getattr(self, method_name)(*args, **kwargs)
         else:
-            method = getattr(self, method_name)
-            return method(*args, **kwargs)
+            names = [tup[0] for tup in getmembers(self, predicate=ismethod)]
+            if method_name not in names:
+                raise AttributeError("{} is not a method of GroupRecord".format(method_name))
+            else:
+                method = getattr(self, method_name)
+                if getattr(method, "_is_a_predicate_method", False):
+                    self.__predicate_methods.add(method_name)
+                    return method(*args, **kwargs)
+                else:
+                    raise AttributeError("{} is not an allowed predicate method".format(method_name))
 
     def _compare_attribute(self, another_record, attribute, another_attribute=None):
         if another_attribute is None:
             another_attribute = attribute
         a1 = getattr(self, attribute)
         a2 = getattr(another_record, another_attribute)
-        if isinstance(a1, str):
+        if isinstance(a1, str) and isinstance(a2, str):
             if len(a1) == 0 or len(a2) == 0:
                 return True
         if a1 == a2:
@@ -226,44 +239,50 @@ class GroupRecord(models.Model):
                 return False
         return True
 
-    def check_predicates(self, predicate_methods, *args, **kwargs):
+    def check_predicates(self, method_names, *args, **kwargs):
         """Returns True only if all predicates return True"""
-        for predicate in predicate_methods:
-            if predicate not in GroupRecord.PREDICATE_METHODS:
-                raise AttributeError("{} is not an allowed predicate method")
-        for predicate in predicate_methods:
-            if not self._call_method(predicate, *args, **kwargs):
+        for predicate_name in method_names:
+            if not self._call_predicate(predicate_name, *args, **kwargs):
                 return False
         return True
 
+    @predicate
     def completely_equal(self, another_record):
         attributes = ['last_name', 'first_name', 'middle_name', 'birth_date']
         return self._compare_attributes(another_record=another_record, attribute_list=attributes)
 
+    @predicate
     def has_equal_full_name(self, another_record):
         attributes = ['last_name', 'first_name', 'middle_name']
         return self._compare_attributes(another_record=another_record, attribute_list=attributes)
 
+    @predicate
     def has_equal_last_name(self, another_record):
         return self._compare_attribute(another_record=another_record, attribute='last_name')
 
+    @predicate
     def has_equal_first_name(self, another_record):
         return self._compare_attribute(another_record=another_record, attribute='first_name')
 
+    @predicate
     def has_equal_middle_name(self, another_record):
         return self._compare_attribute(another_record=another_record, attribute='middle_name')
 
+    @predicate
     def has_equal_date(self, another_record):
         return self._compare_attribute(another_record=another_record, attribute='birth_date')
 
+    @predicate
     def has_equal_first_and_middle_name(self, another_record):
         attributes = ['first_name', 'middle_name']
         return self._compare_attributes(another_record=another_record, attribute_list=attributes)
 
+    @predicate
     def has_equal_last_and_middle_name(self, another_record):
         attributes = ['last_name', 'middle_name']
         return self._compare_attributes(another_record=another_record, attribute_list=attributes)
 
+    @predicate
     def close_by_fuzzy_metric(self, another_record, attribute, tolerance=0.86):
         """Checks that all attributes except chosen are equal and the chosen one is close enough"""
         attributes = ['last_name', 'first_name', 'middle_name']
@@ -281,22 +300,20 @@ class GroupRecord(models.Model):
                     return True
             return False
 
+    @predicate
     def forbidden(self, another_record):
         return another_record in self.forbidden_group_records.all()
 
+    @predicate
     def satisfies_new_group_condition(self, another_record):
         """No date check, used only in sorted-by-date groups"""
         return self.close_by_fuzzy_metric(another_record, 'first_name') or \
                 self.close_by_fuzzy_metric(another_record, 'last_name') or \
                 self.close_by_fuzzy_metric(another_record, 'middle_name')
 
+    @predicate
     def satisfies_existing_group_condition(self, another_record):
-        return self.check_predicates(['has_equal_dates', 'satisfies_new_group_condition'], another_record)
-        # if self.has_equal_date(another_record):
-        #     if self.satisfies_new_group_condition(another_record):
-        #         return True
-        # else:
-        #     return False
+        return self.check_predicates(['has_equal_date', 'satisfies_new_group_condition'], another_record)
 
     def compare_with_list(self, record_list):
         """ Full check with all records in list. Intended for inconsistent groups."""
@@ -312,7 +329,12 @@ class GroupRecord(models.Model):
 
     def seek_for_group(self, group_dict):
         """In group_dict key must be group and value must be list of records"""
-        for group in group_dict:
+        def filter_function(item):
+            d1 = item[0].birth_date
+            d2 = self.birth_date
+            return  d1 == d2 if not (d1 is None and d2 is None) else True
+        filtered = dict(filter(filter_function, group_dict.items()))
+        for group in filtered:
             if group in self.forbidden_groups.all():
                 continue
             if group.inconsistent:
@@ -329,17 +351,6 @@ class GroupRecord(models.Model):
             self.group = suitable_group
             self.save()
             return suitable_group
-
-    # def find_group_from_base(self):
-    #     """No need to use - no advantages in speed compared to dict variant"""
-    #     for group in list(Group.objects.all()):
-    #         related_records = list(group.grouprecord_set.all())
-    #         if group.inconsistent:
-    #             if self.compare_with_list(related_records):
-    #                 return group
-    #         else:
-    #             if self.satisfies_existing_group_condition(related_records[0]):
-    #                 return group
 
     def merge_records_by_hypostases(self, other_records, save=True):
         """Unite all records and related hypostases around this record's person.
@@ -360,7 +371,6 @@ class GroupRecord(models.Model):
             hypostases_for_update.append(record.hypostasis)
             record.person = self.person
             if amount < 2:
-                #previous_person.delete()
                 persons_to_delete.add(previous_person)
             if save:
                 records_for_update.append(record)
