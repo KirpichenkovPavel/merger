@@ -75,8 +75,8 @@ def create_new_groups(*, predicate_methods=None):
     print("Creation of new groups: done")
 
 
-def distribute_records_to_existing_groups():
-    print("Starting distribution to existing groups")
+def distribute_records_among_existing_groups():
+    print("Starting distribution among existing groups")
     print("Extracting records")
     unresolved_records = list(GroupRecord.objects.filter(group__isnull=True))
     print("Making dictionary of groups")
@@ -102,20 +102,20 @@ def distribute_records_to_existing_groups():
     if len(groups_to_update) > 0:
         mark_inconsistency(groups=list(groups_to_update))
         bulk_update(list(groups_to_update), update_fields=['inconsistent'])
-    print("Distribution to existing groups: done")
+    print("Distribution among existing groups: done")
 
 
 def check_group_consistency(group_record_list):
     """Returns True, if all records in list are fully equal"""
     first = group_record_list[0]
     for other in group_record_list[1:]:
-        if not first.completely_equal(other):
+        if not first.completely_equal_for_consistency(other):
             return False
     return True
 
 
 def mark_inconsistency(groups=None, groups_dict=None):
-    """Update all groups consistency flag"""
+    """Update inconsistency flag of chosen groups"""
     print("Starting procedure of inconsistency marking")
     if groups_dict is None:
         print("Making dictionary of groups")
@@ -171,5 +171,5 @@ def merge_consistent_groups(groups_dict=None):
 def full_update():
     """At first compares orphan records with existing groups. Then tries to make new groups from remaining records."""
     print("Starting full update")
-    distribute_records_to_existing_groups()
+    distribute_records_among_existing_groups()
     create_new_groups()

@@ -2,7 +2,7 @@ from django.db import models
 from main_remote.models import Student, Employee, Postgraduate
 from collections import Counter
 from bulk_update.helper import bulk_update
-from main.exceptions import HypostasisIntegrityError
+from main.exceptions import HypostasisIntegrityError, GroupError
 from cached_property import cached_property_ttl
 from merger.local_settings import HYPOSTASIS_CACHE_TTL
 from inspect import getmembers, ismethod
@@ -169,12 +169,13 @@ class Hypostasis(models.Model):
         else:
             record = self.grouprecord_set.get()
         if not record.seek_for_group_and_save(group_dict=group_dict):
-            record.seek_and_make_new_group()
+            record.seek_to_make_new_group()
 
 
 class Group(models.Model):
     inconsistent = models.BooleanField(default=False)
     birth_date = models.DateField(null=True)
+    person = models.ForeignKey(Person, null=True, on_delete=models.CASCADE)
 
     @staticmethod
     def get_groups_dict():
@@ -183,18 +184,30 @@ class Group(models.Model):
     def update_consistency(self):
         records = list(self.group_record_set.all())
         if len(records) > 1:
-            first = records[0]
-            others = records[1:]
-            for record in others:
-                if not first.completely_equal(record):
+            first = records.pop(0)
+            # others = records[1:]
+            for record in records:
+                if not first.completely_equal_for_consistency(record):
                     self.inconsistent = True
                     self.save()
                     return
             self.inconsistent = False
             self.save()
 
+    @property
+    def is_merged(self):
+        if self.person is None:
+            return False
+        else:
+            for record in self.grouprecord_set.all():
+                if record.person != self.person:
+                    return False
+            return True
+
     def unmake(self):
-        """Split all records in group and delete it"""
+        """Split all records in this group and delete it. Can't be done for partially merged groups."""
+        if self.person is not None:
+            raise GroupError("Can't split group, if its part was previously merged")
         records = list(self.grouprecord_set.all())
         for rec1, rec2 in combinations(records, 2):
             rec1.forbidden_group_records.add(rec2)
@@ -205,21 +218,27 @@ class Group(models.Model):
     def merge(self):
         """Unite all records in this group so they and their related hypostases reference one person."""
         records = list(self.grouprecord_set.all())
-        if len(records)  > 1:
-            records[0].merge_records_by_hypostases(records[1:])
+        if self.person is None:
+            first = records.pop(0)
+        else:
+            first = list(filter(lambda item: item.person == self.person, records))[0]
+            records.remove(first)
+        if len(records) > 0:
+            first.merge_records_by_hypostases(records)
+            self.person = first.person
+            self.save()
 
 
 class GroupRecord(models.Model):
-    """Записи для предварительного объединения в группы
+    """ Records for pre-merge groups
 
-    Объединение ведется по указанным в записях группам.
-    Если группа не указана, для записи пока не найдено группы.
-    Запись не может одновременно находиться в нескольких группах. Возможно, есть случаи, когда это будет неверно,
-    но с концептуальной точки зрения запись может относиться только к одному человеку.
-    Объединение в Person проводится на основании сформированных групп, после объединения записи не удаляются.
-    Объединение заключается в перекидывании ссылок на персону в записи и связанной ипостаси.
-    Каждой записи соответствует ипостась, необходимо поддержание целостности: ссылки на персону в записи и ипостаси
-    должны совпадать, данные в записи и в связанной с ипостасью сущности должны быть одинаковыми.
+    Records reference group they belong to.
+    No reference to group means either absence of search or no matching records with this one.
+    Record may belong to up to one group.
+    Created groups may be joined, but neither groups nor records will be deleted in this process.
+    To merge records in group is to make them reference the same person, same for their hypostases.
+    Record must duplicate data in related hypostasis (reference to person) and its remote instance (other fields).
+    If that's not true, an error occurred and integrity was lost.
     """
     hypostasis = models.ForeignKey(Hypostasis, on_delete=models.CASCADE)
     person = models.ForeignKey(Person, null=True, on_delete=models.SET_NULL)
@@ -253,22 +272,26 @@ class GroupRecord(models.Model):
                 else:
                     raise AttributeError("{} is not an allowed predicate method".format(method_name))
 
-    def _compare_attribute(self, another_record, attribute, another_attribute=None):
+    def _compare_attribute(self, another_record, attribute, another_attribute=None, empty_values_work=True):
         if another_attribute is None:
             another_attribute = attribute
         a1 = getattr(self, attribute)
         a2 = getattr(another_record, another_attribute)
-        if isinstance(a1, str) and isinstance(a2, str):
-            if len(a1) == 0 or len(a2) == 0:
+        if empty_values_work:
+            if a1 is None or a2 is None:
                 return True
+            if isinstance(a1, str) and isinstance(a2, str):
+                if len(a1) == 0 or len(a2) == 0:
+                    return True
         if a1 == a2:
             return True
         else:
             return False
 
-    def _compare_attributes(self, another_record, attribute_list):
+    def _compare_attributes(self, another_record, attribute_list, empty_values_work=True):
         for attribute in attribute_list:
-            if not self._compare_attribute(another_record=another_record, attribute=attribute):
+            if not self._compare_attribute(another_record=another_record, attribute=attribute,
+                                           empty_values_work=empty_values_work):
                 return False
         return True
 
@@ -280,9 +303,14 @@ class GroupRecord(models.Model):
         return True
 
     @predicate
-    def completely_equal(self, another_record):
+    def completely_equal_for_search(self, another_record):
         attributes = ['last_name', 'first_name', 'middle_name', 'birth_date']
         return self._compare_attributes(another_record=another_record, attribute_list=attributes)
+
+    @predicate
+    def completely_equal_for_consistency(self, another_record):
+        attributes = ['last_name', 'first_name', 'middle_name', 'birth_date']
+        return self._compare_attributes(another_record=another_record, attribute_list=attributes, empty_values_work=False)
 
     @predicate
     def has_equal_full_name(self, another_record):
@@ -415,7 +443,7 @@ class GroupRecord(models.Model):
         else:
             return hypostases_for_update, persons_to_delete
 
-    def seek_and_make_new_group(self, predicate_methods=None):
+    def seek_to_make_new_group(self, predicate_methods=None):
         """Seek for record to merge. Make new group if record exists. Return new Group or None"""
         if predicate_methods is None:
             predicate_methods = ['has_equal_date', 'satisfies_new_group_condition']
@@ -462,10 +490,20 @@ class GroupRecord(models.Model):
             group_dict = Group.get_groups_dict()
         if self.group is not None:
             self.forbidden_groups.add(self.group)
+            forbidden_group = self.group
             self.group = None
             self.save(update_fields=['group', 'forbidden_groups'])
-            if self.seek_for_group_and_save(group_dict) is None:
-                self.seek_and_make_new_group(predicate_methods=['has_equal_date', 'satisfies_new_group_condition'])
+            if forbidden_group.inconsistent:
+                forbidden_group.update_consistency()
+            group_dict[forbidden_group].remove(self)
+            new_group = self.seek_for_group_and_save(group_dict)
+            if new_group:
+                new_group.update_consistency()
+            else:
+                new_group = self.seek_to_make_new_group(
+                    predicate_methods=['has_equal_date', 'satisfies_new_group_condition'])
+                if new_group:
+                    new_group.update_consistency()
 
     def remove_record_from_forbidden(self, another_record):
         """Remove another record from this record's forbidden records list and vice versa"""

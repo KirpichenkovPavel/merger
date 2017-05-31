@@ -50,6 +50,23 @@ def adjust_employee_key():
     bulk_update(lst, update_fields=['employee_id'])
 
 
+def update_persons_in_groups():
+    """Use in case some groups were merged, but person was not appropriately set."""
+    group_dict = Group.get_groups_dict()
+    cntr = 0
+    ttl = len(group_dict)
+    for group, records in group_dict.items():
+        cntr += 1
+        print("{} of {}".format(cntr, ttl))
+        if group.person is None:
+            unique_persons = set()
+            for r in records:
+                unique_persons.add(r.person)
+            if len(unique_persons) == 1:
+                group.person = unique_persons.pop()
+                group.save()
+
+
 def create_persons(hypo_list):
     """Create a person for each hypostasis in list."""
     hypostases_to_update = []
