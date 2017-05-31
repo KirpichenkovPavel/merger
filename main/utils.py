@@ -25,14 +25,14 @@ def create_hypostases():
     employee_list = list(Employee.objects.all())
     print("\n\n\nStarted fetching postgraduates\n\n\n")
     postgraduate_list = list(Postgraduate.objects.all())
-    print("\n\n\nMaking hypostasis for students.\n\n\n")
+    print("\n\n\nMaking hypostases for students.\n\n\n")
     hypostases = []
     for student in students_list:
         hypostases.append(Hypostasis(student_id=student.id))
-    print("\n\n\nMaking hypostasis for employees.\n\n\n")
+    print("\n\n\nMaking hypostases for employees.\n\n\n")
     for employee in employee_list:
         hypostases.append(Hypostasis(employee_id=employee.id))
-    print("\n\n\nMaking hypostasis for postgraduates.\n\n\n")
+    print("\n\n\nMaking hypostases for postgraduates.\n\n\n")
     for postgraduate in postgraduate_list:
         hypostases.append(Hypostasis(postgraduate_id=postgraduate.id))
     Hypostasis.objects.bulk_create(hypostases)

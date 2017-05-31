@@ -3,13 +3,12 @@ from main_remote.models import Student, Employee, Postgraduate
 from collections import Counter
 from bulk_update.helper import bulk_update
 from main.exceptions import HypostasisIntegrityError
-from cached_property import cached_property, cached_property_ttl
+from cached_property import cached_property_ttl
 from merger.local_settings import HYPOSTASIS_CACHE_TTL
 from inspect import getmembers, ismethod
 from jellyfish import jaro_winkler, levenshtein_distance
 from itertools import combinations
 from main.decorators import predicate
-from django.utils.decorators import method_decorator
 
 
 class Person(models.Model):
@@ -134,9 +133,43 @@ class Hypostasis(models.Model):
     def non_empty_instance(self):
         """Returns related remote instance"""
 
-        class_name = self.remote_class
+        remote_model = self.remote_class
         nonempty_id = self.non_empty_id
-        return class_name.objects.get(pk=nonempty_id)
+        return remote_model.objects.get(pk=nonempty_id)
+
+    def handle_as_new(self, group_dict=None):
+        remote_instance = self.non_empty_instance
+        last_name = remote_instance.last_name
+        first_name = remote_instance.first_name
+        middle_name = remote_instance.middle_name
+        birth_date = remote_instance.date_birth
+        if self.person is None:
+            person = Person(last_name=last_name,
+                            first_name=first_name,
+                            middle_name=middle_name,
+                            birth_date=birth_date)
+            person.save()
+            self.person = person
+            self.save()
+        else:
+            person = self.person
+        num_of_records = self.grouprecord_set.count()
+        if num_of_records == 0:
+            record = GroupRecord(last_name=last_name,
+                                 first_name=first_name,
+                                 middle_name=middle_name,
+                                 birth_date=birth_date,
+                                 person=person,
+                                 hypostasis=self,
+                                 group=None)
+            record.save()
+        elif num_of_records > 1:
+            raise HypostasisIntegrityError("No more than one record should reference hypostasis. Found: {}".\
+                                           format(num_of_records))
+        else:
+            record = self.grouprecord_set.get()
+        if not record.seek_for_group_and_save(group_dict=group_dict):
+            record.seek_and_make_new_group()
 
 
 class Group(models.Model):
@@ -169,6 +202,12 @@ class Group(models.Model):
         bulk_update(records, update_fields=['forbidden_group_records'])
         self.delete()
 
+    def merge(self):
+        """Unite all records in this group so they and their related hypostases reference one person."""
+        records = list(self.grouprecord_set.all())
+        if len(records)  > 1:
+            records[0].merge_records_by_hypostases(records[1:])
+
 
 class GroupRecord(models.Model):
     """Записи для предварительного объединения в группы
@@ -191,12 +230,6 @@ class GroupRecord(models.Model):
     birth_date = models.DateField(null=True)
     forbidden_groups = models.ManyToManyField(Group, related_name='forbidden_group_record_set')
     forbidden_group_records = models.ManyToManyField("self")
-
-    # PREDICATE_METHODS = ["completely_equal", "has_equal_full_name", "has_equal_first_and_middle_name", "has_equal_date",
-    #                      "has_equal_last_and_middle_name", "satisfies_new_group_condition", "has_equal_last_name",
-    #                      "has_equal_first_name", "has_equal_middle_name", "satisfies_existing_group_condition",
-    #                      "close_by_fuzzy_metric", "forbidden"]
-
     # Set of method names, shared among instances. Used in _call_predicate as a cache.
     __predicate_methods = set()
 
@@ -332,7 +365,7 @@ class GroupRecord(models.Model):
         def filter_function(item):
             d1 = item[0].birth_date
             d2 = self.birth_date
-            return  d1 == d2 if not (d1 is None and d2 is None) else True
+            return d1 == d2 if not (d1 is None and d2 is None) else True
         filtered = dict(filter(filter_function, group_dict.items()))
         for group in filtered:
             if group in self.forbidden_groups.all():
@@ -357,7 +390,7 @@ class GroupRecord(models.Model):
 
         This record's person becomes the person referensed by other records and their related hypostases.
         All empty persons (not referenced by any hypostases) are removed.
-        No checks about group being made assuming this checks are already done more efficiently, when
+        No checks about group being made assuming this checks were done more efficiently, when
         this group was created."""
         hypostases_for_update = []
         records_for_update = []
@@ -382,7 +415,7 @@ class GroupRecord(models.Model):
         else:
             return hypostases_for_update, persons_to_delete
 
-    def make_new_group(self, predicate_methods=None):
+    def seek_and_make_new_group(self, predicate_methods=None):
         """Seek for record to merge. Make new group if record exists. Return new Group or None"""
         if predicate_methods is None:
             predicate_methods = ['has_equal_date', 'satisfies_new_group_condition']
@@ -432,7 +465,7 @@ class GroupRecord(models.Model):
             self.group = None
             self.save(update_fields=['group', 'forbidden_groups'])
             if self.seek_for_group_and_save(group_dict) is None:
-                self.make_new_group(predicate_methods=['has_equal_date', 'satisfies_new_group_condition'])
+                self.seek_and_make_new_group(predicate_methods=['has_equal_date', 'satisfies_new_group_condition'])
 
     def remove_record_from_forbidden(self, another_record):
         """Remove another record from this record's forbidden records list and vice versa"""
