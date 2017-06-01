@@ -68,20 +68,6 @@ class Person(models.Model):
                 hypostasis.save()
             person.delete()
 
-    def get_attribute_dict(self, attributes):
-        """Counts the amount of different variants of attributes in person's hypostases.
-
-        Returns a dict with a Counter for each dispatched attribute. Counters count every attribute independently.
-        :param attributes: iterable of attributes from hypostases' related objects. Attributes must be strings.
-        """
-        attributes = {name: Counter() for name in attributes}
-        for attribute in attributes:
-            if not isinstance(attribute, str):
-                raise TypeError("{0} is not a string.".format(attribute))
-            attributes[attribute].update(
-                [getattr(x.get_non_empty_instance(), attribute) for x in list(self.hypostasis_set.all())])
-        return attributes
-
     def __str__(self):
         return "{0} {1} {2}".format(self.last_name, self.first_name, self.middle_name)
 
