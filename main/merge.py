@@ -21,7 +21,7 @@ def create_new_groups(*, predicate_methods=None):
         else:
             return gr.birth_date
     if predicate_methods is None:
-        predicate_methods = ['satisfies_new_group_condition']
+        predicate_methods = ['not_forbidden', 'satisfies_new_group_condition']
     if len(predicate_methods) == 0:
         raise AttributeError("Predicate methods must contain at least one method")
     print("Starting creation of new groups")
