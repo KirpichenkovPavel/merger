@@ -52,7 +52,7 @@ def adjust_employee_key():
 
 def update_persons_in_groups():
     """Use in case some groups were merged, but person was not appropriately set."""
-    group_dict = Group.get_groups_dict()
+    group_dict = Group.get_dictionary()
     cntr = 0
     ttl = len(group_dict)
     for group, records in group_dict.items():
@@ -150,7 +150,7 @@ def show_metrics(gd):
 
 def show_close_records(tolerance):
     print(tolerance)
-    gd = Group.get_groups_dict()
+    gd = Group.get_dictionary()
     for g, grs in gd.items():
         if g.inconsistent:
             for gr in grs[1:]:

@@ -16,5 +16,8 @@ def check_forbidden_records(method):
 
 
 def predicate(method):
-    method._is_a_predicate_method = True
-    return method
+    @wraps(method)
+    def inner(*args, **kwargs):
+        return method(*args, **kwargs)
+    inner._is_a_predicate_method = True
+    return inner
