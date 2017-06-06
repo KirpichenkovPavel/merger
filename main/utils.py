@@ -6,6 +6,7 @@ from django.conf import settings
 from django_remote_model.util.util import shell_authenticate, add_bp_credentials
 from difflib import SequenceMatcher
 import jellyfish as jf
+import random
 
 
 def bp_user_auth():
@@ -181,3 +182,22 @@ def gr_update_persons():
     print("Saving")
     bulk_update(lst, update_fields=['person'])
     print("Done")
+
+
+def rand_str(length):
+    str = ''
+    letters = 'йцукенгшщзхъфывапролджэячсмитьбюЙЦУКЕНГШЩЗХЪФЫВАПРОЛДЖЭЯЧСМИТЬБЮ- '
+    i = 0
+    while i < length:
+        str += random.choice(letters)
+        i += 1
+    return str
+
+
+def random_records():
+    lst = list(GroupRecord.objects.all())
+    for r in lst:
+        r.last_name = rand_str(random.randint(2,30))
+        r.first_name = rand_str(random.randint(2, 30))
+        r.middle_name = rand_str(random.randint(2, 30))
+    bulk_update(lst)

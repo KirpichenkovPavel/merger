@@ -2,6 +2,7 @@ from main.models import Person, Hypostasis, GroupRecord, Group
 from itertools import groupby, combinations
 from datetime import date
 from bulk_update.helper import bulk_update
+from memory_profiler import profile
 
 
 def create_new_groups(*args, **kwargs):
@@ -47,7 +48,7 @@ def create_new_groups(*args, **kwargs):
         for record_pair in combinations(same_date_group, 2):
             a = record_pair[0]
             b = record_pair[1]
-            if a.check_predicates(method_names=predicate_methods, another_record=b, **kwargs):
+            if a.check_predicates(predicate_methods=predicate_methods, another_record=b, **kwargs):
                 a_in_group = False
                 b_in_group = False
                 new_group = None
@@ -68,20 +69,26 @@ def create_new_groups(*args, **kwargs):
                     b.group = new_group
                     records_to_update.append(b)
         groups_to_update.extend(new_groups)
+        for group in new_groups:
+            for record in same_date_group:
+                if record.group == group and record.birth_date is not None:
+                    group.birth_date = record.birth_date
+        bulk_update(new_groups, update_fields=['birth_date'])
     print("Have {0} records to save".format(len(records_to_update)))
     bulk_update(records_to_update, update_fields=['group'])
     print("Have {0} groups to update inconsistency".format(len(groups_to_update)))
     mark_inconsistency(groups_to_update)
-    bulk_update(groups_to_update, update_fields=['inconsistent'])
     print("Creation of new groups: done")
 
-
-def distribute_records_among_existing_groups():
+def distribute_records_among_existing_groups(**kwargs):
     print("Starting distribution among existing groups")
     print("Extracting records")
     unresolved_records = list(GroupRecord.objects.filter(group__isnull=True))
     print("Making dictionary of groups")
     group_dict = Group.get_dictionary()
+    if len(group_dict) == 0:
+        print("No groups found. Finishing")
+        return
     records_to_update = []
     groups_to_update = set()
     print("Handling records")
@@ -91,7 +98,7 @@ def distribute_records_among_existing_groups():
         cntr += 1
         if cntr % 100 == 0:
             print("{} of {} records handled".format(cntr, ttl))
-        suitable_group = record.seek_for_group(group_dict)
+        suitable_group = record.seek_for_group(group_dict, **kwargs)
         if suitable_group is not None:
             record.group = suitable_group
             records_to_update.append(record)
@@ -102,21 +109,20 @@ def distribute_records_among_existing_groups():
     print("Have {0} groups to update".format(len(groups_to_update)))
     if len(groups_to_update) > 0:
         mark_inconsistency(groups=list(groups_to_update))
-        bulk_update(list(groups_to_update), update_fields=['inconsistent'])
     print("Distribution among existing groups: done")
-
-
-def check_group_consistency(group_record_list):
-    """Returns True, if all records in list are fully equal"""
-    first = group_record_list[0]
-    for other in group_record_list[1:]:
-        if not first.completely_equal_for_consistency(other):
-            return False
-    return True
 
 
 def mark_inconsistency(groups=None, group_dict=None):
     """Update inconsistency flag of chosen groups"""
+
+    def check_group_consistency(group_record_list):
+        """Returns True, if all records in list are fully equal"""
+        first = group_record_list[0]
+        for other in group_record_list[1:]:
+            if not first.completely_equal_for_consistency(another_record=other):
+                return False
+        return True
+
     print("Starting procedure of inconsistency marking")
     if group_dict is None:
         print("Making dictionary of groups")
@@ -131,7 +137,7 @@ def mark_inconsistency(groups=None, group_dict=None):
                 raise TypeError("groups must contain Group instances")
     for group in groups:
         records = group_dict[group]
-        if check_group_consistency(records):
+        if check_group_consistency(group_record_list=records):
             if group.inconsistent:
                 group.inconsistent = False
                 groups_to_update.add(group)
@@ -152,19 +158,24 @@ def merge_consistent_groups(group_dict=None):
         group_dict = Group.get_dictionary()
     records_for_update = []
     hypostases_for_update = []
+    groups_for_update = []
     persons_to_delete = set()
+
     print("Iterating")
     for group, records in group_dict.items():
         print(group.id)
         if not group.inconsistent and len(records) > 1:
             changed_records, changed_hypostases, unnecessary_persons = \
                 records[0].merge_records_by_hypostases(records[1:], save=False)
-            hypostases_for_update.extend(changed_hypostases) if len(changed_hypostases) > 0 else None
+            group.person = records[0].person
+            groups_for_update.append(group)
+            hypostases_for_update.extend(changed_hypostases)
             records_for_update.extend(changed_records)
             persons_to_delete = persons_to_delete.union(unnecessary_persons)
     print("Saving")
     bulk_update(records_for_update, update_fields=['person'])
     bulk_update(hypostases_for_update, update_fields=['person'])
+    bulk_update(list(group_dict.keys()), update_fields=['person'])
     for person in persons_to_delete:
         person.delete()
     print("Consistent groups merge: done")
