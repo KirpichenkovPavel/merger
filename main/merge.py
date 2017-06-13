@@ -6,7 +6,7 @@ from time import time
 
 
 def create_new_groups(*args, **kwargs):
-    """Puts records into new groups if they do not have one yet and can meld with one other
+    """Puts records into new groups if they do not have one yet and can meld with one another.
 
     Each record will have only one group (person) or none if it's alone.
     Predicate methods must contain one or more method names from GroupRecord class.

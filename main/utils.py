@@ -9,9 +9,7 @@ import random
 
 
 def create_hypostases():
-    """Create a new hypostasis for each student, employee and postgraduate.
-    Should be called once.
-    """
+    """Create a new hypostasis for each student, employee and postgraduate. Should be called once."""
     print("\n\n\nStarted fetching students\n\n\n")
     students_list = list(Student.objects.all())
     print("\n\n\nStarted fetching employees\n\n\n")
@@ -44,7 +42,6 @@ def create_persons(hypo_list):
         new_person.save()
         h.person = new_person
         hypostases_to_update.append(h)
-        #h.save()
         print(h.id)
     print("Saving")
     bulk_update(hypostases_to_update, update_fields=['person'])
@@ -56,7 +53,6 @@ def adjust_employee_key():
         tmp = x.employee_id
         tmp = "0" * (5 - len(tmp)) + tmp
         x.employee_id = tmp
-        # x.save()
     lst = list(Hypostasis.objects.filter(employee_id__isnull=False))
     list(map(func, lst))
     bulk_update(lst, update_fields=['employee_id'])

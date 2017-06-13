@@ -233,7 +233,6 @@ class GroupRecord(models.Model):
     Created groups may be joined, but neither groups nor records will be deleted in this process.
     To merge records in group is to make them reference the same person, same for their hypostases.
     Record must duplicate data in related hypostasis (reference to person) and its remote instance (other fields).
-    If that's not true, an error occurred and integrity was lost.
     """
     hypostasis = models.ForeignKey(Hypostasis, on_delete=models.CASCADE)
     person = models.ForeignKey(Person, null=True, on_delete=models.SET_NULL)
@@ -487,9 +486,7 @@ class GroupRecord(models.Model):
             return records_for_update, hypostases_for_update, persons_to_delete
 
     def merge_records_by_persons(self, other_records, save=True):
-        """This merge also updates related records from the other groups if they have reference to the same person.
-
-        May be strange, slow and generally wrong"""
+        """This merge also updates related records from the other groups if they have reference to the same person."""
         persons_to_delete = set()
         hypostases_for_update = []
         records_for_update = []
