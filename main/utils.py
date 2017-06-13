@@ -4,16 +4,8 @@ from bulk_update.helper import bulk_update
 from crequest.middleware import CrequestMiddleware
 from django.conf import settings
 from django_remote_model.util.util import shell_authenticate, add_bp_credentials
-from difflib import SequenceMatcher
-import jellyfish as jf
+from time import time
 import random
-
-
-def bp_user_auth():
-    shell_authenticate(settings.MANAGEMENT_USER_NAME, settings.MANAGEMENT_USER_PASS)
-    request = CrequestMiddleware.get_request()
-    request = add_bp_credentials(request, settings.MANAGEMENT_BP_NAME, settings.MANAGEMENT_BP_PASS)
-    CrequestMiddleware.set_request(request)
 
 
 def create_hypostases():
@@ -37,6 +29,25 @@ def create_hypostases():
     for postgraduate in postgraduate_list:
         hypostases.append(Hypostasis(postgraduate_id=postgraduate.id))
     Hypostasis.objects.bulk_create(hypostases)
+
+
+def create_persons(hypo_list):
+    """Create a person for each hypostasis in list."""
+    hypostases_to_update = []
+    print("Making")
+    for h in hypo_list:
+        instance = h.non_empty_instance
+        new_person = Person(last_name=instance.last_name,
+                            first_name=instance.first_name,
+                            middle_name=instance.middle_name,
+                            birth_date=instance.date_birth)
+        new_person.save()
+        h.person = new_person
+        hypostases_to_update.append(h)
+        #h.save()
+        print(h.id)
+    print("Saving")
+    bulk_update(hypostases_to_update, update_fields=['person'])
 
 
 def adjust_employee_key():
@@ -68,25 +79,6 @@ def update_persons_in_groups():
                 group.save()
 
 
-def create_persons(hypo_list):
-    """Create a person for each hypostasis in list."""
-    hypostases_to_update = []
-    print("Making")
-    for h in hypo_list:
-        instance = h.non_empty_instance
-        new_person = Person(last_name=instance.last_name,
-                            first_name=instance.first_name,
-                            middle_name=instance.middle_name,
-                            birth_date=instance.date_birth)
-        new_person.save()
-        h.person = new_person
-        hypostases_to_update.append(h)
-        #h.save()
-        print(h.id)
-    print("Saving")
-    bulk_update(hypostases_to_update, update_fields=['person'])
-
-
 def create_group_records(no_doubles=False):
     """Creates group records for initial data for test purposes."""
     records = []
@@ -113,75 +105,15 @@ def create_group_records(no_doubles=False):
 
 
 def update_group_record_persons():
+    start = time()
     grs = list(GroupRecord.objects.all())
     for gr in grs:
         print(gr.id)
         gr.person = gr.hypostasis.person
-    bulk_update(grs, update_fields=['person'])
-
-
-def direct_search():
-    """Slower than reverse"""
-    result = {}
-    records = GroupRecord.objects.filter(group__isnull=False)
-    for record in records:
-        key = record.group
-        try:
-            result[key].append(record)
-        except KeyError:
-            result[key] = [record]
-    return result
-
-
-def show_metrics(gd):
-    for group, records in gd.items():
-        if group.inconsistent:
-            if records[0].first_name != records[1].first_name:
-                name1 = records[0].first_name
-                name2 = records[1].first_name
-            else:
-                name1 = records[0].last_name
-                name2 = records[1].last_name
-            print("{0} {1} l:{2} j:{3} j-w:{4}".format(name1,
-                                                       name2,
-                                                       jf.levenshtein_distance(name1, name2),
-                                                       jf.jaro_distance(name1, name2),
-                                                       jf.jaro_winkler(name1, name2)))
-
-
-def show_close_records(tolerance):
-    print(tolerance)
-    gd = Group.get_dictionary()
-    for g, grs in gd.items():
-        if g.inconsistent:
-            for gr in grs[1:]:
-                if grs[0].close_by_jaro_winkler(gr, 'last_name', tolerance) or \
-                        grs[0].close_by_jaro_winkler(gr, 'first_name', tolerance):
-                    print("{} {}".format(grs[0], gr))
-
-
-def calc_xtra():
-    ps = list(Person.objects.all().prefetch_related('hypostasis_set'))
-    cnt = 0
-    item = 0
-    for p in ps:
-        print(item)
-        item += 1
-        cnt += p.hypostasis_set.count() - 1
-    print(cnt)
-
-
-def gr_update_persons():
-    lst = list(GroupRecord.objects.all())
-    i = 0
-    ttl = len(lst)
-    for gr in lst:
-        print("{} of {} records".format(i, ttl))
-        gr.person = gr.hypostasis.person
-        i += 1
-    print("Saving")
-    bulk_update(lst, update_fields=['person'])
-    print("Done")
+    update = time()
+    bulk_update(grs, update_fields=['person'], batch_size=1000)
+    print("{} seconds for update".format(update - start))
+    print("{} seconds for save".format(time() - update))
 
 
 def rand_str(length):
@@ -201,3 +133,28 @@ def random_records():
         r.first_name = rand_str(random.randint(2, 30))
         r.middle_name = rand_str(random.randint(2, 30))
     bulk_update(lst)
+
+
+def drop_from_group():
+    print("Droping one record from big groups")
+    dct = Group.get_dictionary()
+    records = []
+    i = 0
+    ttl = len(dct)
+    for v in dct.values():
+        i += 1
+        if i % 100 == 0:
+            print("{} of {}".format(i, ttl))
+        if len(v) > 2:
+            v[0].group = None
+            records.append(v[0])
+    print("Saving")
+    bulk_update(records, update_fields=['group'], batch_size=1000)
+    print("Done")
+
+
+def bp_user_auth():
+    shell_authenticate(settings.MANAGEMENT_USER_NAME, settings.MANAGEMENT_USER_PASS)
+    request = CrequestMiddleware.get_request()
+    request = add_bp_credentials(request, settings.MANAGEMENT_BP_NAME, settings.MANAGEMENT_BP_PASS)
+    CrequestMiddleware.set_request(request)

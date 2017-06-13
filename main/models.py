@@ -7,12 +7,10 @@ from inspect import getmembers, ismethod
 from jellyfish import jaro_winkler, levenshtein_distance
 from itertools import combinations
 from main.decorators import predicate
-import time
-from memory_profiler import profile
 
 
 class Person(models.Model):
-    """Человечище"""
+    """Person as a unique object"""
 
     first_name = models.CharField(max_length=200)
     middle_name = models.CharField(max_length=200)
@@ -58,22 +56,12 @@ class Person(models.Model):
             if hypostasis.non_empty_instance == instance:
                 return hypostasis
 
-    def merge_persons(self, person_list):
-        """Merge persons in the list with the first peson. OUT OF DATE. DOES NOT CONSIDER GROUP RECORDS"""
-        for person in person_list:
-            if not isinstance(person, Person):
-                raise TypeError("Merge persons: person in collection is not a Person type object.")
-            for hypostasis in person.hypostasis_set.all():
-                hypostasis.person = self
-                hypostasis.save()
-            person.delete()
-
     def __str__(self):
         return "{0} {1} {2}".format(self.last_name, self.first_name, self.middle_name)
 
 
 class Hypostasis(models.Model):
-    """Одна из сторон деятельности человечища."""
+    """One part of the person's activity: student, employee or postgraduate."""
 
     employee_id = models.CharField(max_length=255, unique=True, null=True)
     student_id = models.IntegerField(unique=True, null=True)
@@ -83,14 +71,13 @@ class Hypostasis(models.Model):
     HYPOSTASIS_CACHE_TTL = 300
 
     def __str__(self):
-        # from main.merge import get_instance_from_hypostasis
         instance = self.non_empty_instance
         st = str(type(instance)).split(".")[-1].split("'")[0] + " " + str(instance)
         return st
 
     @cached_property_ttl(ttl=HYPOSTASIS_CACHE_TTL)
     def _instance_type(self):
-        """Returns one of the following strings: student, postgraduate or employee
+        """Returns one of the following strings: student, postgraduate or employee.
 
         Raises HypostasisIntegrityError either if all ids are empty or if more than one is not empty
         """
@@ -158,9 +145,9 @@ class Hypostasis(models.Model):
             record = self.grouprecord_set.get()
         group = record.seek_for_group_and_save(group_dict=group_dict)
         if not group:
-            group = record.seek_to_make_new_group(predicate_methods=['not_forbidden',
-                                                                     'has_equal_date',
-                                                                     'satisfies_new_group_condition'])
+            group = record.seek_to_make_new_group(predicate_methods=['has_equal_date',
+                                                                     'satisfies_new_group_condition',
+                                                                     'not_forbidden'])
         if group is not None:
             group.update_consistency()
 
@@ -178,7 +165,6 @@ class Group(models.Model):
         records = list(self.grouprecord_set.all())
         if len(records) > 1:
             first = records.pop(0)
-            # others = records[1:]
             for record in records:
                 if not first.completely_equal_for_consistency(another_record=record):
                     self.inconsistent = True
@@ -197,14 +183,30 @@ class Group(models.Model):
                     return False
             return True
 
-    def unmake(self):
+    def unmake(self, search=True, group_dict=None, **kwargs):
         """Split all records in this group and delete it. Can't be done for partially merged groups."""
         if self.person is not None:
             raise GroupError("Can't split group, if its part was previously merged")
-        records = list(self.grouprecord_set.all())
+        records = list(self.grouprecord_set.all()) if not group_dict else group_dict[self]
         for rec1, rec2 in combinations(records, 2):
             rec1.forbidden_group_records.add(rec2)
             rec2.forbidden_group_records.add(rec1)
+        if group_dict:
+            group_dict.pop(self)
+        if search:
+            if group_dict is None:
+                group_dict = Group.get_dictionary()
+            for record in records:
+                record.group = None
+                new_group = record.seek_for_group(group_dict=group_dict, **kwargs)
+                if new_group:
+                    record.group = new_group
+                else:
+                    new_group = record.seek_to_make_new_group(**kwargs)
+                    if new_group:
+                        record.group = new_group
+                if new_group:
+                    group_dict[new_group].append(record)
         bulk_update(records)
         self.delete()
 
@@ -347,16 +349,16 @@ class GroupRecord(models.Model):
         return self._compare_attributes(another_record=another_record, attribute_list=attributes)
 
     @predicate
-    def close_by_fuzzy_metric(self, *, another_record,  **kwargs):
+    def close_by_fuzzy_metric(self, *, another_record,  attribute, tolerance=None, **kwargs):
         """Checks that all attributes except chosen are equal and the chosen one is close enough"""
+        default_tolerance = 0.86
         attributes = ['last_name', 'first_name', 'middle_name']
-        tolerance = kwargs.get('tolerance', 0.86)
-        attribute = kwargs.get('attribute', "")
         if attribute not in attributes:
             raise AttributeError('{} is a wrong attribute'.format(attribute))
         else:
+            if tolerance is None:
+                tolerance = default_tolerance
             attributes.remove(attribute)
-            # attributes.append('birth_date')
             if self._compare_attributes(another_record, attributes):
                 str1 = getattr(self, attribute)
                 str2 = getattr(another_record, attribute)
@@ -371,25 +373,23 @@ class GroupRecord(models.Model):
         return another_record not in self.forbidden_group_records.all()
 
     @predicate
-    def satisfies_new_group_condition(self, another_record, **kwargs):
+    def satisfies_new_group_condition(self, *, another_record, tolerance=None, **kwargs):
         """No date check, use only in groups with equal date"""
-        return self.close_by_fuzzy_metric(another_record=another_record, attribute='first_name', **kwargs) or \
-               self.close_by_fuzzy_metric(another_record=another_record, attribute='last_name', **kwargs) or \
-               self.close_by_fuzzy_metric(another_record=another_record, attribute='middle_name', **kwargs)
+        return self.close_by_fuzzy_metric(another_record=another_record, attribute='first_name', tolerance=tolerance) or \
+               self.close_by_fuzzy_metric(another_record=another_record, attribute='last_name', tolerance=tolerance) or \
+               self.close_by_fuzzy_metric(another_record=another_record, attribute='middle_name', tolerance=tolerance)
 
     @predicate
-    def satisfies_existing_group_condition(self, another_record, **kwargs):
+    def satisfies_existing_group_condition(self, *, another_record, tolerance=None, **kwargs):
         if self.has_equal_date(another_record=another_record):
-            return self.satisfies_new_group_condition(another_record, **kwargs)
-        # return self.check_predicates(predicate_methods=['has_equal_date', 'satisfies_new_group_condition'],
-        #                              another_record=another_record, **kwargs)
+            return self.satisfies_new_group_condition(another_recsord=another_record, tolerance=tolerance)
 
     def compare_with_list(self, record_list, **kwargs):
         """ Full check with all records in list. Intended for inconsistent groups."""
         if self.group is not None:
             raise AttributeError('Group record should not have a group yet')
         else:
-            predicate_methods = kwargs.pop('predicate_methods', ['not_forbidden', 'satisfies_new_group_condition'])
+            predicate_methods = kwargs.pop('predicate_methods', ['satisfies_new_group_condition', 'not_forbidden'])
             for record_to_compare in record_list:
                 if self.check_predicates(predicate_methods=predicate_methods, another_record=record_to_compare,
                                          **kwargs):
@@ -398,52 +398,44 @@ class GroupRecord(models.Model):
 
     def seek_for_group(self, group_dict, **kwargs):
         """In group_dict key must be a group and value must be a list of records"""
-        if kwargs.get('profile', False):
-            start = time.time()
 
         def filter_function(item):
             d1 = item.birth_date
             d2 = self.birth_date
             return d1 == d2 if (d1 is not None and d2 is not None) else True
-        predicate_methods = kwargs.pop('predicate_methods', ['not_forbidden', 'satisfies_existing_group_condition'])
-        # if kwargs.get('filter', False):
+
+        predicate_methods = kwargs.pop('predicate_methods', ['satisfies_new_group_condition', 'not_forbidden'])
         filtered_keys = list(filter(filter_function, group_dict.keys()))
-        # else:
-        #     filtered_keys = group_dict.keys()
         for group in filtered_keys:
             if group in self.forbidden_groups.all():
                 continue
+            if len(group_dict[group]) < 2:
+                raise GroupError("Group (id={}) with less than 2 records is incorrect".format(group.id))
             if group.inconsistent:
                 if self.compare_with_list(record_list=group_dict[group], predicate_methods=predicate_methods, **kwargs):
-                    if kwargs.get('profile', False):
-                        del filtered_keys
-                        # print(time.time() - start)
                     return group
             else:
                 if self.check_predicates(predicate_methods=predicate_methods,
                                          another_record=group_dict[group][0],
                                          **kwargs):
-                    if kwargs.get('profile', False):
-                        del filtered_keys
-                        # print(time.time() - start)
                     return group
-        if kwargs.get('profile', False):
-            del filtered_keys
-            # print(time.time() - start)
 
     def seek_for_group_and_save(self, group_dict, **kwargs):
         """In mass updates use bulk update instead"""
-        predicate_methods = kwargs.get('predicate_methods', ['not_forbidden', 'satisfies_existing_group_condition'])
+        predicate_methods = kwargs.get('predicate_methods', ['satisfies_new_group_condition', 'not_forbidden'])
         suitable_group = self.seek_for_group(group_dict=group_dict, predicate_methods=predicate_methods, **kwargs)
         if suitable_group is not None:
+            if self.group:
+                group_dict[self.group].remove(self)
             self.group = suitable_group
             self.save()
+            group_dict[suitable_group].append(self)
             return suitable_group
 
-    def seek_to_make_new_group(self, **kwargs):
+    def seek_to_make_new_group(self, group_dict=None, **kwargs):
         """Seek for record to merge. Make a new group if record exists. Return the new Group or None"""
         predicate_methods = kwargs.pop('predicate_methods',
-                                       ['not_forbidden', 'has_equal_date', 'satisfies_new_group_condition'])
+                                       ['has_equal_date', 'satisfies_new_group_condition', 'not_forbidden'])
         group = None
         for record in GroupRecord.objects.filter(group__isnull=True):
             if self.check_predicates(predicate_methods=predicate_methods, another_record=record, **kwargs) \
@@ -453,8 +445,12 @@ class GroupRecord(models.Model):
                     group.save()
                     self.group = group
                     self.save()
+                    if group_dict:
+                        group_dict[group] = [self]
                 record.group = group
                 record.save()
+                if group_dict:
+                    group_dict[group].append(record)
         return group
 
     def merge_records_by_hypostases(self, other_records, save=True):
@@ -519,12 +515,14 @@ class GroupRecord(models.Model):
         else:
             return records_for_update, hypostases_for_update, persons_to_delete
 
-    def remove_from_group(self, group_dict=None):
+    def remove_from_group(self, search=True, group_dict=None):
         """Add group to the forbidden and check for new groups"""
         if self.group is not None:
             if self.group.grouprecord_set.count() == 2:
                 raise GroupError("Group can't contain less than 2 records. Delete the whole group instead.")
-            if group_dict is None:
+            if self.person == self.group.person:
+                raise GroupError("Can't remove merged person from group")
+            if search and group_dict is None:
                 group_dict = Group.get_dictionary()
             self.forbidden_groups.add(self.group)
             forbidden_group = self.group
@@ -532,15 +530,16 @@ class GroupRecord(models.Model):
             self.save()
             if forbidden_group.inconsistent:
                 forbidden_group.update_consistency()
-            group_dict[forbidden_group].remove(self)
-            new_group = self.seek_for_group_and_save(group_dict)
-            if new_group:
-                new_group.update_consistency()
-            else:
-                new_group = self.seek_to_make_new_group(
-                    predicate_methods=['not_forbidden', 'has_equal_date', 'satisfies_new_group_condition'])
+            if search:
+                group_dict[forbidden_group].remove(self)
+                new_group = self.seek_for_group_and_save(group_dict)
                 if new_group:
                     new_group.update_consistency()
+                else:
+                    new_group = self.seek_to_make_new_group(
+                        predicate_methods=['has_equal_date', 'satisfies_new_group_condition', 'not_forbidden'])
+                    if new_group:
+                        new_group.update_consistency()
 
     def remove_record_from_forbidden(self, another_record):
         """Remove another record from this record's forbidden records list and vice versa"""

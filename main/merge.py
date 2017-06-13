@@ -2,7 +2,7 @@ from main.models import Person, Hypostasis, GroupRecord, Group
 from itertools import groupby, combinations
 from datetime import date
 from bulk_update.helper import bulk_update
-from memory_profiler import profile
+from time import time
 
 
 def create_new_groups(*args, **kwargs):
@@ -10,9 +10,8 @@ def create_new_groups(*args, **kwargs):
 
     Each record will have only one group (person) or none if it's alone.
     Predicate methods must contain one or more method names from GroupRecord class.
-    Predicate methods must be defined and maintained in Group.PREDICATE_METHODS attribute.
+    Predicate methods must be defined and maintained in GroupRecord model.
     Call with "satisfies_new_group_condition" to form new groups.
-    More flexible methods may appear later.
     """
 
     def key_function(gr):
@@ -21,9 +20,8 @@ def create_new_groups(*args, **kwargs):
             return date.today()
         else:
             return gr.birth_date
-    predicate_methods = kwargs.get('predicate_methods', ['not_forbidden', 'satisfies_new_group_condition'])
-    # if predicate_methods not in kwargs:
-    #     predicate_methods = ['not_forbidden', 'satisfies_new_group_condition']
+
+    predicate_methods = kwargs.get('predicate_methods', ['satisfies_new_group_condition', 'not_forbidden'])
     if len(predicate_methods) == 0:
         raise AttributeError("Predicate methods must contain at least one method")
     print("Starting creation of new groups")
@@ -80,6 +78,7 @@ def create_new_groups(*args, **kwargs):
     mark_inconsistency(groups_to_update)
     print("Creation of new groups: done")
 
+
 def distribute_records_among_existing_groups(**kwargs):
     print("Starting distribution among existing groups")
     print("Extracting records")
@@ -94,10 +93,12 @@ def distribute_records_among_existing_groups(**kwargs):
     print("Handling records")
     ttl = len(unresolved_records)
     cntr = 0
+    now = time()
     for record in unresolved_records:
         cntr += 1
         if cntr % 100 == 0:
-            print("{} of {} records handled".format(cntr, ttl))
+            print("{} of {} records handled {}".format(cntr, ttl, time() - now))
+            now = time()
         suitable_group = record.seek_for_group(group_dict, **kwargs)
         if suitable_group is not None:
             record.group = suitable_group
@@ -184,5 +185,9 @@ def merge_consistent_groups(group_dict=None):
 def full_update():
     """At first compares orphan records with existing groups. Then tries to make new groups from remaining records."""
     print("Starting full update")
+    start = time()
     distribute_records_among_existing_groups()
+    distribute = time()
     create_new_groups()
+    end = time()
+    print("{} seconds for distribution\n{} seconds for creation".format(distribute - start, end - distribute))
