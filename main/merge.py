@@ -21,7 +21,7 @@ def create_new_groups(*args, **kwargs):
         else:
             return gr.birth_date
 
-    predicate_methods = kwargs.get('predicate_methods', ['satisfies_new_group_condition', 'not_forbidden'])
+    predicate_methods = kwargs.pop('predicate_methods', ['satisfies_new_group_condition', 'not_forbidden'])
     if len(predicate_methods) == 0:
         raise AttributeError("Predicate methods must contain at least one method")
     print("Starting creation of new groups")

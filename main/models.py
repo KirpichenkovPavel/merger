@@ -147,7 +147,8 @@ class Hypostasis(models.Model):
         if not group:
             group = record.seek_to_make_new_group(predicate_methods=['has_equal_date',
                                                                      'satisfies_new_group_condition',
-                                                                     'not_forbidden'])
+                                                                     'not_forbidden'],
+                                                  group_dict=group_dict)
         if group is not None:
             group.update_consistency()
 
@@ -243,6 +244,7 @@ class GroupRecord(models.Model):
     birth_date = models.DateField(null=True)
     forbidden_groups = models.ManyToManyField(Group, related_name='forbidden_group_record_set')
     forbidden_group_records = models.ManyToManyField("self")
+    instance_type = models.CharField(max_length=255, default="")
     # Set of method names, shared among instances. Used in _call_predicate as a cache.
     __predicate_methods = set()
 
@@ -323,29 +325,29 @@ class GroupRecord(models.Model):
 
     @predicate
     def has_equal_last_name(self, *, another_record, **kwargs):
-        return self._compare_attribute(another_record=another_record, attribute='last_name')
+        return self._compare_attribute(another_record=another_record, attribute='last_name', empty_values_work=False)
 
     @predicate
     def has_equal_first_name(self, *, another_record, **kwargs):
-        return self._compare_attribute(another_record=another_record, attribute='first_name')
+        return self._compare_attribute(another_record=another_record, attribute='first_name', empty_values_work=False)
 
     @predicate
     def has_equal_middle_name(self, *, another_record, **kwargs):
-        return self._compare_attribute(another_record=another_record, attribute='middle_name')
+        return self._compare_attribute(another_record=another_record, attribute='middle_name', empty_values_work=False)
 
     @predicate
     def has_equal_date(self, *, another_record, **kwargs):
-        return self._compare_attribute(another_record=another_record, attribute='birth_date')
+        return self._compare_attribute(another_record=another_record, attribute='birth_date', empty_values_work=False)
 
     @predicate
     def has_equal_first_and_middle_name(self, *, another_record, **kwargs):
         attributes = ['first_name', 'middle_name']
-        return self._compare_attributes(another_record=another_record, attribute_list=attributes)
+        return self._compare_attributes(another_record=another_record, attribute_list=attributes, empty_values_work=False)
 
     @predicate
     def has_equal_last_and_middle_name(self, *, another_record, **kwargs):
         attributes = ['last_name', 'middle_name']
-        return self._compare_attributes(another_record=another_record, attribute_list=attributes)
+        return self._compare_attributes(another_record=another_record, attribute_list=attributes, empty_values_work=False)
 
     @predicate
     def close_by_fuzzy_metric(self, *, another_record,  attribute, tolerance=None, **kwargs):
@@ -372,11 +374,18 @@ class GroupRecord(models.Model):
         return another_record not in self.forbidden_group_records.all()
 
     @predicate
+    def changed_name(self, *, another_record, **kwargs):
+        return self.instance_type != another_record.instance_type and \
+               (self.has_equal_first_and_middle_name(another_record=another_record) or
+                self.has_equal_last_and_middle_name(another_record=another_record))
+
+    @predicate
     def satisfies_new_group_condition(self, *, another_record, tolerance=None, **kwargs):
-        """No date check, use only in groups with equal date"""
-        return self.close_by_fuzzy_metric(another_record=another_record, attribute='first_name', tolerance=tolerance) or \
+        """No date check, use only in groups with equal date or with another predicate"""
+        return self.changed_name(another_record=another_record) or \
                self.close_by_fuzzy_metric(another_record=another_record, attribute='last_name', tolerance=tolerance) or \
-               self.close_by_fuzzy_metric(another_record=another_record, attribute='middle_name', tolerance=tolerance)
+               self.close_by_fuzzy_metric(another_record=another_record, attribute='middle_name', tolerance=tolerance) or \
+               self.close_by_fuzzy_metric(another_record=another_record, attribute='first_name', tolerance=tolerance)
 
     @predicate
     def satisfies_existing_group_condition(self, *, another_record, tolerance=None, **kwargs):

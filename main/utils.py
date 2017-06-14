@@ -93,6 +93,7 @@ def create_group_records(no_doubles=False):
                                    last_name=instance.last_name,
                                    first_name=instance.first_name,
                                    middle_name=instance.middle_name,
+                                   instance_type=hypo._instance_type,
                                    birth_date=instance.date_birth))
         i += 1
     print("\nSaving records\n")
@@ -154,3 +155,37 @@ def bp_user_auth():
     request = CrequestMiddleware.get_request()
     request = add_bp_credentials(request, settings.MANAGEMENT_BP_NAME, settings.MANAGEMENT_BP_PASS)
     CrequestMiddleware.set_request(request)
+
+
+def count():
+    from collections import Counter
+    cnt = Counter()
+    cnt.update([r.birth_date for r in GroupRecord.objects.all()])
+    print("hi")
+    return cnt
+
+
+def emps():
+    gs = []
+    for g in Group.objects.filter(inconsistent=True):
+        recs = list(g.grouprecord_set.all())
+        flag = False
+        for r in recs:
+            if r.hypostasis._instance_type == "employee":
+                if flag == True:
+                    gs.append(g)
+                flag = True
+    print("hi")
+    return gs
+
+
+def update_record_instance_type():
+    """For records with no instance type - get one from hypostasis"""
+    print("Filling records' instance type")
+    records = list(GroupRecord.objects.all())
+    for rec in records:
+        rec.instance_type = rec.hypostasis._instance_type
+    print("Saving")
+    bulk_update(records, update_fields=["instance_type"], batch_size=10000)
+    print("Done")
+
